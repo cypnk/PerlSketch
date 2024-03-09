@@ -1,0 +1,26 @@
+<div class="content">
+
+<form action="/new" method="post">
+<input type="hidden" name="nonce" nonce="[% nonce %]">
+<input type="hidden" name="token" nonce="[% token %]">
+<input type="hidden" name="meta" nonce="[% meta %]">
+
+<legend>[% form_title %]</legend>
+
+<p><input type="text" id="title" name="title" placeholder="Title" 
+	minlength="1" maxlength="255" required>
+<output for="title" data-required="Title is required" 
+	data-invalid="Title must be between 1 and 255 characters" 
+	data-valid="&#x2714;"></output></p>
+
+<p><textarea name="body" id="body" rows="5" cols="60" placeholder="Body" 
+	minlength="3" required></textarea>
+<output for="body" data-required="Post body is required" 
+	data-invalid="Post body must be at least 3 characters" 
+	data-valid="&#x2714;"></output></p>
+	
+	<p><input type="submit" value="Post"></p>
+</form>
+
+
+</div>
