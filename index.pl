@@ -61,6 +61,8 @@ our %path_map = (
 		# User acccess
 		{ path => "login",			handler => \&viewLogin },
 		{ path => "register",			handler => \&viewRegister },
+		{ path => "profile",			handler => \&viewProfile },
+		{ path => "password",			handler => \&viewChangePass },
 		
 		# Static content
 		{ path => ":tree/:file",		handler=> \&sendResource },
@@ -75,7 +77,10 @@ our %path_map = (
 		{ path => "edit",			handler => \&handleEditPost },
 		
 		{ path => "login",			handler => \&handleLogin },
-		{ path => "register",			handler => \&handleRegister }
+		{ path => "register",			handler => \&handleRegister }, 
+  		
+		{ path => "profile",			handler => \&handleProfile },
+		{ path => "password",			handler => \&handleChangePass }
 	],
 	
 	head	=> [ 
@@ -287,7 +292,7 @@ sub pacify {
 sub utfDecode {
 	my ( $term ) = @_;
 	if ( $term eq '' ) {
-		next;
+		return '';
 	}
 	
 	$term	= pacify( $term );
@@ -338,6 +343,15 @@ sub storage {
 	$path	=~ s/\.{2,}/\./g;
 	
 	return pacify( "$dir/$path" );
+}
+
+# Filter number within min and max range, inclusive
+sub intRange {
+	my ( $val, $min, $max ) = @_;
+	my $out = sprintf( "%d", "$val" );
+ 	
+	return 
+	( $out > $max ) ? $max : ( ( $out < $min ) ? $min : $out );
 }
 
 
@@ -512,6 +526,13 @@ sub streamFile {
 	exit;
 }
 
+# TODO: Send ranged content
+sub streamRanged {
+	my ( $ranges ) = @_;
+ 	
+	exit;
+}
+
 # Find and send a file resource
 sub sendResource {
 	my ( $realm, $verb, $params ) = @_;
@@ -559,6 +580,8 @@ sub sendResource {
 		httpCode( '200' );
 		exit;
 	}
+
+  	# TODO: Scan for file request ranges
 	
 	httpCode( '200' );
 	preamble( 1, 1 );
@@ -584,6 +607,7 @@ sub sendResource {
 # TODO: Main homepage
 sub viewHome {
 	my ( $realm, $verb, $params ) = @_;
+ 	# Homepage template
 	my $tpl = storage( "sites/$realm/index.html" );
 	
 	if ( !-f $tpl ) {
@@ -673,7 +697,7 @@ sub viewPosts {
 	exit;	
 }
 
-# TODO: New post creation form form
+# TODO: New post creation form
 sub viewCreatePost {
 	my ( $realm, $verb, $params ) = @_;
 	
@@ -864,16 +888,77 @@ sub handleLogin {
 	}
 }
 
+# TODO: Current user profile
+sub viewProfile {
+	my ( $realm, $verb, $params ) = @_;
+	
+	my %data = (
+		title		=> 'Profile',
+		token		=> 'token',
+		nonce		=> 'nonce',
+		meta		=> 'meta',
+		
+		form_title	=> 'Profile'
+	);
+	
+	httpCode( '200' );
+	preamble();
+	
+	#render( storage( "sites/$realm/profile.html" ), \%data );
+	exit;
+}
+
+# TODO: Posted profile data
+sub handleProfile {
+	my ( $realm, $verb, $params ) = @_;
+	httpCode( '200' );
+	preamble();
+	foreach my $key ( keys %$params ) {
+		print "<p>$key: $params->{$key}</p>";
+	}
+}
+
+# TODO: Password changing form
+sub viewChangePass {
+	my ( $realm, $verb, $params ) = @_;
+	
+	my %data = (
+		title		=> 'Change Password',
+		token		=> 'token',
+		nonce		=> 'nonce',
+		meta		=> 'meta',
+		
+		form_title	=> 'Password'
+	);
+	
+	httpCode( '200' );
+	preamble();
+	
+	#render( storage( "sites/$realm/password.html" ), \%data );
+	exit;
+}
+
+# TODO: Posted password data
+sub handleChangePass {
+	my ( $realm, $verb, $params ) = @_;
+	httpCode( '200' );
+	preamble();
+	foreach my $key ( keys %$params ) {
+		print "<p>$key: $params->{$key}</p>";
+	}
+}
+
 # Startup
 sub begin() {
 	my $verb 	= $request{'verb'};
 	
+	my $realm	= $request{'realm'};
+	
 	# Send options, if asked
+ 	# TODO: Limit options based on realm
 	if ( $verb eq 'options' ) {
 		sendOptions();
 	}
-	
-	my $realm	= $request{'realm'};
 	
 	# Begin router
 	if ( exists ( $path_map{$verb} ) ) {
