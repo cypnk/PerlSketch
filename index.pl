@@ -315,19 +315,17 @@ sub render {
 	my ( $html, $params ) = @_;
 	
 	my $settings = {
-		ENCODING	=> 'UTF-8',
+		ENCODING	=> 'utf8',
 		TRIM		=> 1,
-		RELATIVE	=> 1
+		RELATIVE	=> 1,
+		CHOMP_ONE	=> 1
 	};
 	
 	# Template module with options
 	my $tpl		= Template->new( $settings );
-	if ( !keys %$params ) {
-		$tpl->process( $html ) or exit 1;
-		return;
-	}
 	
-	$tpl->process( $html, $params );
+	binmode STDOUT;
+	$tpl->process( $html, $params ) or exit 1;
 }
 
 # Relative storage directory
@@ -353,6 +351,7 @@ sub intRange {
 	return 
 	( $out > $max ) ? $max : ( ( $out < $min ) ? $min : $out );
 }
+
 
 
 # Response
@@ -580,8 +579,8 @@ sub sendResource {
 		httpCode( '200' );
 		exit;
 	}
-
-  	# TODO: Scan for file request ranges
+	
+	# TODO: Scan for file request ranges
 	
 	httpCode( '200' );
 	preamble( 1, 1 );
@@ -607,7 +606,7 @@ sub sendResource {
 # TODO: Main homepage
 sub viewHome {
 	my ( $realm, $verb, $params ) = @_;
- 	# Homepage template
+	# Homepage template
 	my $tpl = storage( "sites/$realm/index.html" );
 	
 	if ( !-f $tpl ) {
@@ -904,7 +903,7 @@ sub viewProfile {
 	httpCode( '200' );
 	preamble();
 	
-	#render( storage( "sites/$realm/profile.html" ), \%data );
+	render( storage( "sites/$realm/profile.html" ), \%data );
 	exit;
 }
 
@@ -955,7 +954,7 @@ sub begin() {
 	my $realm	= $request{'realm'};
 	
 	# Send options, if asked
- 	# TODO: Limit options based on realm
+	# TODO: Limit options based on realm
 	if ( $verb eq 'options' ) {
 		sendOptions();
 	}
