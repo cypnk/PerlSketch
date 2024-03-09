@@ -1,0 +1,20 @@
+<div class="content">
+
+<form action="/login" method="post">
+<input type="hidden" name="nonce" nonce="[% nonce %]">
+<input type="hidden" name="token" nonce="[% token %]">
+<input type="hidden" name="meta" nonce="[% meta %]">
+
+<legend>[% form_title %]</legend>
+
+<p><input type="text" id="username" name="username" placeholder="Username" 
+	minlength="3" maxlength="100" value="[% username %]" readonly></p>
+
+<p><textarea name="body" id="body" rows="5" cols="60" placeholder="Body" 
+	minlength="1"></textarea>
+<output for="body" data-valid="&#x2714;"></output></p>
+
+<p><input type="submit" value="Save"></p>
+</form>
+
+</div>
