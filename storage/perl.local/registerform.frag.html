@@ -1,0 +1,25 @@
+<div class="content">
+
+<form action="/login" method="post">
+<input type="hidden" name="nonce" nonce="[% nonce %]">
+<input type="hidden" name="token" nonce="[% token %]">
+<input type="hidden" name="meta" nonce="[% meta %]">
+
+<legend>[% form_title %]</legend>
+
+<p><input type="text" id="username" name="username" placeholder="Username" 
+	minlength="3" maxlength="100" required>
+<output for="username" data-required="Username is required" 
+	data-invalid="Username must be between 3 and 100 characters" 
+	data-valid="&#x2714;"></output></p>
+
+<p><input type="text" id="password" name="password" placeholder="Password" 
+	minlength="8" maxlength="1024" required>
+<output for="password" data-required="Password is required" 
+	data-invalid="Password must be at least 8 characters" 
+	data-valid="&#x2714;"></output></p>
+
+<p><input type="submit" value="Register"></p>
+</form>
+
+</div>
