@@ -1,0 +1,265 @@
+/*
+Nord Theme
+https://www.nordtheme.com/docs/colors-and-palettes/
+*/
+
+:root {
+	
+	/* Polar Night */
+	--nord0: #2e3440;
+	--nord1: #3b4252;
+	--nord2: #434c5e;
+	--nord3: #4c566a;
+	
+	/* Snow Storm */
+	--nord4: #d8dee9;
+	--nord5: #e5e9f0;
+	--nord6: #eceff4;
+	
+	/* Frost */
+	--nord7: #8fbcbb;
+	--nord8: #88c0d0;
+	--nord9: #81a1c1;
+	--nord10: #5e81ac;
+	
+	/* Aurora */
+	--nord11: #bf616a;
+	--nord12: #d08770;
+	--nord13: #ebcb8b;
+	--nord14: #a3be8c;
+	--nord15: #b48ead;
+}
+
+*, *::before, *::after {
+	box-sizing: border-box;
+	outline: none;
+}
+
+html {
+	background: var(--nord0);
+}
+
+body {
+	font: 400 0.86rem sans-serif;
+	color: var(--nord6);
+	line-height: 1.6;
+	margin: 0;
+	padding: 0;
+}
+
+main {
+	color: var(--nord0);
+	background: var(--nord6);
+}
+
+.content {
+	padding: 1rem;
+	margin: 0 auto;
+	max-width: 800px;
+}
+
+.post {
+	padding: 1rem;
+	background: #fff;
+	box-shadow: var(--nord4) 0px 4px 6px
+}
+
+.post + .post {
+	margin-top: 1.2rem;
+}
+
+main :is(h1, h2, h3, h4, h5, h6, legend) {
+	color: var(--nord3);
+}
+
+h1, h2, h3, legend {
+	font-weight: 400;
+}
+
+p {
+	margin: 0;
+}
+
+* + p {
+	margin-top: 1rem;
+}
+
+a {
+	color: var(--nord3);
+	text-decoration: underline;
+}
+
+a:hover {
+	color: var(--nord9);
+	text-decoration: none;
+}
+
+a:active {
+	color: var(--nord8);
+}
+
+a:visited {
+	color: var(--nord7);
+}
+
+h1 a, h2 a, h3 a, h4 a, h5 a, h6 a {
+	text-decoration: none;
+}
+
+time {
+	color: var(--nord3);
+	font-style: italic;
+}
+
+li .info {
+	display: block;
+}
+
+ul.posts {
+	list-style: none;
+	margin: 1rem 0;
+	padding: 0;
+}
+
+ul.posts li + li {
+	margin-top: 0.3rem;
+}
+
+ul.posts li a {
+	font-weight: 600;
+	color: var(--nord10)
+}
+
+form {
+	margin: 0;
+	padding: 1rem 0;
+}
+
+legend {
+	margin: 0;
+	padding: 0;
+	font-size: 1.3rem;
+}
+
+input, select, textarea, label {
+	font: inherit;
+	line-height: inherit;
+}
+
+::placeholder {
+	color: var(--nord2);
+	opacity: 1;
+}
+
+label[for], output {
+	display: block;
+}
+
+output {
+	color: var(--nord3);
+	font-size: 90%;
+	font-style: italic;
+}
+
+input:is([type="text"],[type="passsword"],[type="search"],[type="search"]), 
+textarea, select {
+	outline: 2px solid transparent;
+	color: var(--nord0);
+	border: 1px solid var(--nord10);
+	background: #fff;
+	padding: 0.2rem 0.3rem;
+}
+
+input:is([type="text"],[type="passsword"],[type="search"],[type="search"]):focus, 
+textarea:focus, select:focus {
+	background: #fff;
+}
+
+input:is([type="text"],[type="passsword"],[type="search"],[type="search"]):not(:placeholder-shown):valid:focus, 
+textarea:not(:placeholder-shown):valid:focus,
+select:not(:placeholder-shown):valid:focus {
+	outline-color: var(--nord14);
+	border-color: var(--nord14);
+}
+
+input:is([type="text"],[type="passsword"],[type="search"],[type="search"]
+	):placeholder-shown:focus, 
+textarea:placeholder-shown:focus, select:placeholder-shown:focus {
+	outline-color: var(--nord8);
+	border-color:  var(--nord8);
+}
+
+input:is([type="text"],[type="passsword"],[type="search"],[type="search"]
+	):not(:placeholder-shown):invalid, 
+textarea:not(:placeholder-shown):invalid, 
+select:not(:placeholder-shown):invalid {
+	outline-color: var(--nord11);
+	border-color: var(--nord11);
+	background: var(--nord13);
+}
+
+input:is([type="text"],[type="passsword"],[type="search"],[type="search"]
+	):not(:placeholder-shown):invalid:focus, 
+textarea:not(:placeholder-shown):invalid:focus, 
+select:not(:placeholder-shown):invalid:focus {
+	background: #fff;
+}
+
+input:is([type="text"],[type="passsword"],[type="search"],[type="search"]):disabled,
+textarea:disabled, select:disabled {
+	background: var(--nord4);
+}
+
+input:is([type="text"],[type="passsword"],[type="search"],[type="search"]
+	):not(:placeholder-shown):valid, textarea:not(:placeholder-shown):valid,
+select:not(:placeholder-shown):valid {
+	border-color: var(--nord14);
+}
+
+input:is([type="text"],[type="passsword"],[type="search"],[type="search"]
+	)[required]:placeholder-shown ~ output:after, 
+textarea:placeholder-shown ~ output:after,
+select:placeholder-shown ~ output:after {
+	content: attr(data-required);
+}
+
+input[required]:not(:placeholder-shown):invalid ~ output:after,
+textarea:not(:placeholder-shown):invalid ~ output:after,
+select:not(:placeholder-shown):invalid ~ output:after {
+	content: attr(data-invalid);
+}
+
+input:valid ~ output:after, textarea:valid ~ output:after, 
+select:valid ~ output:after{
+	content: attr(data-valid);
+}
+
+input:is([type="submit"],[type="reset"],[type="button"]), button, .btn {
+	font-weight: 600;
+	background: var(--nord10);
+	border: 1px solid var(--nord10);
+	color: #fff;
+	padding: 0.2rem 1rem;
+	cursor: pointer;
+}
+
+input:is([type="submit"],[type="reset"],[type="button"]):hover, button:hover, .btn:hover {
+	background: var(--nord3);
+	border-color: var(--nord3);
+	color: var(--nord6);
+}
+
+input:is([type="submit"],[type="reset"],[type="button"]):focus, button:focus, .btn:focus {
+	background: var(--nord14);
+	border-color: var(--nord14);
+	color: var(--nord0);
+}
+
+form:invalid input:is([type="submit"],[type="reset"],[type="button"]), 
+input:is([type="submit"],[type="reset"],[type="button"]):disabled, 
+form:invalid button, button:disabled, form:invalid .btn, .btn:disabled {
+	background: var(--nord4);
+	border-color: var(--nord4);
+	color: var(--nord10);
+}
+
