@@ -54,6 +54,10 @@ our %path_map = (
 		# Optional area or homepage
 		{ path => "pages/:slug",		handler => \&viewArea },
 		
+		# Tag/category content
+		{ path => "tags/:tags",			handler => \&viewTags },
+		{ path => "tags/:tags/page:page",	handler => \&viewTags },
+		
 		# Searching and search pagination
 		{ path => "\\?find=:all&page=:page",	handler => \&viewSearch },
 		{ path => "\\?find=:all",		handler => \&viewSearch },
@@ -654,6 +658,40 @@ sub viewArea {
 		title	=> $label,
 		body	=> 
 		"<p>Area requested <strong>$label</strong> with " . 
+			"<strong>$verb</strong> on <em>$realm</em></p>" . 
+			 "<p>Page $page</p>"
+	);
+	
+	httpCode( '200' );
+	preamble();
+	
+	render( storage( "sites/$realm/index.html" ), \%data );
+	exit;
+}
+
+# TODO: Tag sorted content
+sub viewTags {
+	my ( $realm, $verb, $params ) = @_;
+	
+	my $tags	= $params->{tags}	//= '';
+	my $page	= $params->{page}	//= 1;
+	
+	$tags = pacify( $tags );
+	
+	if ( $label eq '' ) {
+		sendNotFound();
+	}
+	
+	if ( $verb eq 'head' ) {
+		httpCode( '200' );
+		# Nothing else to send
+		exit;
+	}
+	
+	my %data = (
+		title	=> $label,
+		body	=> 
+		"<p>Tag(s) requested <strong>$tags</strong> with " . 
 			"<strong>$verb</strong> on <em>$realm</em></p>" . 
 			 "<p>Page $page</p>"
 	);
