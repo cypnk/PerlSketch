@@ -28,8 +28,15 @@ use constant POST_LIMIT		=> 10;
 # File stream buffer size
 use constant BUFFER_SIZE	=> 10240;
 
-# Default database name
-use constant DEFAULT_DATA	=> "perlsketch.db";
+
+# Cookie defaults
+
+# Base expiration
+use constant COOKIE_EXP		=> 604800;
+
+# Base domain path
+use constant COOKIE_PATH	=> '/';
+
 
 
 # Request methods and path handler map
@@ -169,8 +176,8 @@ our %request	= (
 	# Client request method
 	'verb'		=> lc( $ENV{REQUEST_METHOD}	//= '' ),
 	
-	# Request protocol scheme HTTP/HTTPS etc..
-	'scheme'	=> lc( $ENV{REQUEST_SCHEME}	//= 'http' ),
+	# TLS connection status
+	'secure'	=> isSecure(),
 	
 	# Request query string
 	'query'		=> $ENV{QUERY_STRING}		//= ''
@@ -436,6 +443,19 @@ sub siteRealm {
 	return $realm;
 }
 
+# Guess if current request is secure
+sub isSecure {
+	# Request protocol scheme HTTP/HTTPS etc..
+	my $scheme	= lc( $ENV{REQUEST_SCHEME} //= 'http' );
+	
+	# Forwarded protocol, if set
+	my $frd		= 
+		$ENV{HTTP_X_FORWARDED_PROTO}	//
+		$ENV{HTTP_X_FORWARDED_PROTOCOL}	//
+		$ENV{HTTP_X_URL_SCHEME}		// 'http';
+	
+	return ( $scheme eq 'https' || $frd  =~ /https/i ) ? 1 : 0;
+}
 
 
 
@@ -1113,4 +1133,331 @@ sub begin() {
 begin();
 
 __DATA__
+
+
+
+
+-- Database: sessions.db --
+
+-- Visitor/User sessions
+CREATE TABLE sessions(
+	id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+	session_id TEXT DEFAULT NULL COLLATE NOCASE,
+	session_ip TEXT DEFAULT NULL COLLATE NOCASE,
+	session_data TEXT DEFAULT NULL COLLATE NOCASE,
+	created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);-- --
+CREATE UNIQUE INDEX idx_session_id ON sessions( session_id )
+	WHERE session_id IS NOT NULL;-- --
+CREATE INDEX idx_session_ip ON sessions( session_ip ) 
+	WHERE session_ip IS NOT NULL;-- --
+CREATE INDEX idx_session_created ON sessions( created DESC );-- --
+CREATE INDEX idx_session_updated ON sessions( updated DESC );-- --
+
+CREATE TRIGGER session_update AFTER UPDATE ON sessions
+BEGIN
+	UPDATE sessions SET updated = CURRENT_TIMESTAMP 
+		WHERE id = NEW.id;
+END;
+
+-- End database --
+
+
+
+
+
+-- Database: perlsketch.db --
+
+-- Content areas
+CREATE TABLE realms (
+	id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+	basename TEXT NOT NULL COLLATE NOCASE,
+	basepath TEXT NOT NULL DEFAULT '/'
+);-- --
+CREATE UNIQUE INDEX idx_realm_base ON realms ( basename, basepath );
+CREATE INDEX idex_realm_name ON realms ( basename );
+CREATE INDEX idx_realm_path ON realms ( basepath );
+
+
+-- User access accounts
+CREATE TABLE IF NOT EXISTS users (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	username TEXT NOT NULL COLLATE NOCASE,
+	password TEXT NOT NULL,
+	email TEXT NOT NULL COLLATE NOCASE,
+	display TEXT DEFAULT NULL COLLATE NOCASE,
+	bio TEXT DEFAULT NULL COLLATE NOCASE
+);-- --
+CREATE UNIQUE INDEX idx_user_username ON users ( username );-- --
+CREATE UNIQUE INDEX idx_user_email ON users ( email );-- --
+
+-- Access metadata
+CREATE TABLE user_meta (
+	user_id INTEGER NOT NULL,
+	
+	-- Activity
+	last_ip TEXT DEFAULT NULL COLLATE NOCASE,
+	last_ua TEXT DEFAULT NULL COLLATE NOCASE,
+	last_active DATETIME DEFAULT NULL,
+	last_login DATETIME DEFAULT NULL,
+	last_pass_change DATETIME DEFAULT NULL,
+	
+	-- Auth status,
+	is_approved INTEGER NOT NULL DEFAULT 0,
+	is_locked INTEGER NOT NULL DEFAULT 0,
+	
+	created DATETIME DEFAULT CURRENT_TIMESTAMP,
+	updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+	status INTEGER NOT NULL DEFAULT 0,
+	
+	CONSTRAINT fk_meta_user 
+		FOREIGN KEY ( user_id ) 
+		REFERENCES users ( id )
+		ON DELETE CASCADE
+);-- --
+CREATE UNIQUE INDEX idx_user_meta ON user_meta ( user_id );-- --
+CREATE INDEX idx_user_created ON user_meta ( created );
+CREATE INDEX idx_user_updated ON user_meta ( updated );
+CREATE INDEX idx_user_ip ON user_meta( last_ip )
+	WHERE last_ip IS NOT NULL;-- --
+CREATE INDEX idx_user_ua ON user_meta( last_ua )
+	WHERE last_ua IS NOT NULL;-- --
+CREATE INDEX idx_user_active ON user_meta( last_active )
+	WHERE last_active IS NOT NULL;-- --
+CREATE INDEX idx_user_login ON user_meta( last_login )
+	WHERE last_login IS NOT NULL;-- --
+CREATE INDEX idx_user_pass_change ON user_meta( last_pass_change )
+	WHERE last_pass_change IS NOT NULL;-- --
+CREATE INDEX idx_user_status ON user_meta ( status );
+
+CREATE TRIGGER user_insert AFTER INSERT ON users FOR EACH ROW 
+BEGIN
+	INSERT INTO user_meta( user_id ) VALUES ( NEW.id );
+END;-- --
+
+CREATE TRIGGER user_update AFTER UPDATE ON users FOR EACH ROW 
+BEGIN
+	UPDATE user_meta SET updated = CURRENT_TIMESTAMP 
+		WHERE user_id = NEW.id;
+END;-- --
+
+-- Cookie-based logins
+CREATE TABLE logins(
+	user_id INTEGER NOT NULL,
+	lookup TEXT NOT NULL COLLATE NOCASE,
+	updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	hash TEXT DEFAULT NULL COLLATE NOCASE,
+	
+	CONSTRAINT fk_login_user 
+		FOREIGN KEY ( user_id ) 
+		REFERENCES users ( id )
+		ON DELETE CASCADE
+);-- --
+CREATE UNIQUE INDEX idx_login_user ON logins ( user_id );-- --
+CREATE UNIQUE INDEX idx_login_lookup ON logins ( lookup );-- --
+CREATE INDEX idx_login_updated ON logins ( updated );-- --
+CREATE INDEX idx_login_hash ON logins ( hash )
+	WHERE hash IS NOT NULL;-- --
+
+CREATE TABLE roles (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	label TEXT NOT NULL COLLATE NOCASE
+);-- --
+CREATE UNIQUE INDEX idx_role_label ON roles ( label );-- --
+
+-- Privileges and permissions
+CREATE TABLE authority (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	settings TEXT NOT NULL DEFAULT '{}' COLLATE NOCASE
+);-- --
+
+CREATE TABLE role_authority (
+	role_id INTEGER NOT NULL REFERENCES roles( id )
+		ON DELETE CASCADE,
+	auth_id INTEGER NOT NULL REFERENCES authority( id ) 
+		ON DELETE CASCADE,
+	
+	PRIMARY KEY ( role_id, auth_id )
+);-- --
+
+CREATE TABLE user_roles (
+	role_id INTEGER NOT NULL REFERENCES roles( id )
+		ON DELETE CASCADE,
+	user_id INTEGER NOT NULL REFERENCES users( id )
+		ON DELETE CASCADE,
+	
+	PRIMARY KEY ( role_id, user_id )
+);-- --
+
+CREATE VIEW login_view AS SELECT 
+	lg.user_id AS id, 
+	lg.lookup AS lookup,
+	lg.updated AS updated, 
+	lg.hash AS hash, 
+	
+	u.username AS username, 
+	
+	um.status AS status, 
+	um.created AS created,
+	um.is_approved AS is_approved,
+	um.is_locked AS is_locked
+	
+	FROM logins lg 
+	LEFT JOIN users u ON lg.user_id = u.id 
+	LEFT JOIN user_meta um ON u.id = um.user_id;-- --
+
+
+CREATE TABLE post_types(
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	label TEXT DEFAULT NULL COLLATE NOCASE,
+	status INTEGER NOT NULL DEFAULT 0
+);-- --
+CREATE UNIQUE INDEX idx_ptype_label ON post_types ( label );
+CREATE INDEX idx_ptype_status ON post_types ( status );-- --
+
+
+
+-- Site content
+CREATE TABLE posts (
+	id INTEGER PRIMARY KEY,
+	
+	-- NULL for categories, parent ID for others
+	parent_id INTEGER DEFAULT NULL 
+		REFERENCES posts( id ) ON DELETE SET NULL,
+	title TEXT DEFAULT NULL COLLATE NOCASE,
+	content TEXT NOT NULL COLLATE NOCASE,
+	summary TEXT DEFAULT NULL COLLATE NOCASE,
+	
+	 -- 'board', 'post', 'comment' etc...
+	post_type TEXT NOT NULL COLLATE NOCASE,
+	anon NOT NULL DEFAULT 0,
+	user_id INTEGER DEFAULT NULL,
+	
+	CONSTRAINT fk_post_user 
+		FOREIGN KEY ( user_id ) 
+		REFERENCES users( id )
+		ON DELETE SET NULL
+);-- --
+CREATE INDEX idx_post_parent ON posts ( parent_id )
+	WHERE parent_id IS NOT NULL;-- --
+CREATE INDEX idx_post_user ON posts ( user_id )
+	WHERE user_id IS NOT NULL;-- --
+CREATE INDEX idx_post_type ON posts ( post_type );-- --
+
+CREATE TABLE post_meta (
+	post_id INTEGER NOT NULL UNIQUE, 
+	
+	-- Breadcrumb path, excluding realm
+	crumbs TEXT DEFAULT NULL,
+	
+	child_count INTEGER DEFAULT 0,
+	flag_count INTEGER NOT NULL DEFAULT 0,
+	
+	last_user_id INTEGER DEFAULT NULL,
+	last_created DATETIME DEFAULT NULL,
+	
+	created DATETIME DEFAULT CURRENT_TIMESTAMP,
+	updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+	sort_order INTEGER NOT NULL DEFAULT 0,
+	status INTEGER NOT NULL DEFAULT 0,
+	
+	CONSTRAINT fk_post_meta 
+		FOREIGN KEY ( post_id ) 
+		REFERENCES posts( id )
+		ON DELETE CASCADE
+);-- --
+CREATE INDEX idx_post_meta ON post_meta ( post_id );-- --
+CREATE INDEX idx_post_created ON post_meta ( created );-- --
+CREATE INDEX idx_post_updated ON post_meta ( updated );-- --
+CREATE INDEX idx_post_last_user ON post_meta ( last_user_id )
+	WHERE last_user_id IS NOT NULL;-- --
+CREATE INDEX idx_post_last_created ON post_meta ( last_created )
+	WHERE last_created IS NOT NULL;-- --
+CREATE INDEX idx_post_sort ON post_meta ( sort_order );-- --
+
+CREATE TRIGGER post_insert AFTER INSERT ON posts FOR EACH ROW 
+BEGIN
+	INSERT INTO post_meta ( post_id ) VALUES ( NEW.id );
+END;-- --
+
+CREATE TRIGGER post_update AFTER UPDATE ON posts FOR EACH ROW 
+BEGIN
+	UPDATE post_meta SET updated = CURRENT_TIMESTAMP 
+		WHERE rowid = NEW.rowid;
+END;-- --
+
+-- Searching
+CREATE VIRTUAL TABLE post_search 
+	USING fts4( body, tokenize=unicode61 );-- --
+
+
+-- Content realms
+CREATE TABLE post_realms (
+	post_id INTEGER NOT NULL REFERENCES posts( id )
+		ON DELETE CASCADE,
+	realm_id INTEGER NOT NULL REFERENCES realms( id )
+		ON DELETE RESTRICT,
+	
+	PRIMARY KEY ( post_id, realm_id )
+);-- --
+
+
+-- PMs/Direct messages etc...
+CREATE TABLE mentions(
+	post_id INTEGER NOT NULL REFERENCES posts( id )
+		ON DELETE CASCADE,
+	user_id INTEGER NOT NULL REFERENCES users( id )
+		ON DELETE CASCADE,
+	
+	PRIMARY KEY ( post_id, user_id )
+);-- --
+
+
+
+CREATE TABLE tags(
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	term TEXT NOT NULL UNIQUE COLLATE NOCASE,
+	slug TEXT NOT NULL UNIQUE COLLATE NOCASE
+);-- --
+
+CREATE TABLE post_tags(
+	tag_id INTEGER NOT NULL REFERENCES tags( id )
+		ON DELETE CASCADE,
+	user_id INTEGER NOT NULL REFERENCES users( id )
+		ON DELETE CASCADE,
+	
+	PRIMARY KEY ( tag_id, user_id )
+);-- --
+
+-- Moderation queue
+CREATE TABLE flags(
+	user_id INTEGER NOT NULL,
+	post_id INTEGER DEFAULT NULL,
+	content TEXT DEFAULT NULL,
+	
+	CONSTRAINT fk_flag_user 
+		FOREIGN KEY ( user_id ) 
+		REFERENCES users ( id )
+		ON DELETE CASCADE,
+	
+	CONSTRAINT fk_flag_post
+		FOREIGN KEY ( post_id ) 
+		REFERENCES posts ( id )
+		ON DELETE CASCADE
+);-- --
+
+CREATE TRIGGER flag_insert AFTER INSERT ON flags FOR EACH ROW 
+BEGIN 
+	UPDATE post_meta SET flag_count = ( flag_count + 1 ) 
+		WHERE post_id = NEW.post_id;
+END;-- --
+
+CREATE TRIGGER flag_delete BEFORE DELETE ON flags FOR EACH ROW
+BEGIN
+	UPDATE post_meta SET flag_count = ( flag_count - 1 ) 
+		WHERE post_id = OLD.post_id;
+END;-- --
+
+-- End database --
 
