@@ -12,6 +12,7 @@ use warnings;
 use Template;
 use File::Basename;
 use Encode;
+use DBI;
 
 # Perl version
 use 5.32.1;
@@ -26,6 +27,9 @@ use constant POST_LIMIT		=> 10;
 
 # File stream buffer size
 use constant BUFFER_SIZE	=> 10240;
+
+# Default database name
+use constant DEFAULT_DATA	=> "perlsketch.db";
 
 
 # Request methods and path handler map
@@ -274,6 +278,10 @@ our %http_codes = (
 	'500'	=> "500 Internal Server Error",
 	'501'	=> "501 Not Implemented"
 );
+
+# Database connection handles
+our %dbh;
+
 
 
 # Basic filtering
@@ -604,6 +612,79 @@ sub sendResource {
 
 
 
+# Database connectivity
+
+
+
+
+# Get database connection
+sub getDb {
+	my ( $db ) = @_;
+	
+	# Database connection string format
+	$db	= pacify( $db );
+	$db	=~ s/\.{2,}/\./g;
+	
+	chomp( $db );
+	
+	if ( exists( $dbh{$db} ) ) {
+		return $dbh{$db};
+	}
+	
+	# Database file
+	my $df		= storage( $db );
+	my $first_run	= ( -f $df ) ? 0 : 1;
+	my $dsn		= "dbi:SQLite;dbname=$df";
+	
+	$dbh{$db}->connect( $dsn, "", "", {
+		AutoCommit		=> 0,
+		AutoInactiveDestroy	=> 0,
+		PrintError		=> 0,
+		RaiseError		=> 1,
+		Taint			=> 1
+	} ) or exit 1;
+	
+	# Preemptive defense
+	$dbh{$db}->do( 'PRAGMA quick_check;' );
+	$dbh{$db}->do( 'PRAGMA trusted_schema = OFF;' );
+	$dbh{$db}->do( 'PRAGMA cell_size_check = ON;' );
+	
+	# Prepare defaults if first run
+	if ( $first_run ) {
+		$dbh{$db}->do( 'PRAGMA encoding = "UTF-8";' );
+		$dbh{$db}->do( 'PRAGMA page_size = "16384";' );
+		$dbh{$db}->do( 'PRAGMA auto_vacuum = "2";' );
+		$dbh{$db}->do( 'PRAGMA temp_store = "2";' );
+		$dbh{$db}->do( 'PRAGMA secure_delete = "1";' );
+		
+		# TODO: Install SQL
+		
+		# Instalation check
+		$dbh{$db}->do( 'PRAGMA integrity_check;' );
+		$dbh{$db}->do( 'PRAGMA foreign_key_check;' );
+	}
+	
+	$dbh{$db}->do( 'PRAGMA journal_mode = WAL;' );
+	$dbh{$db}->do( 'PRAGMA foreign_keys = ON;' );
+	
+	return $dbh{$db};
+}
+
+# Close every open connection
+sub closeDb {
+	foreach my $key ( keys %dbh ) {
+		$dbh{$key}->disconnect();
+	}
+}
+
+# Cleanup
+END {
+	closeDb();
+}
+
+
+
+
 
 # Site views ( Also exit after completing their tasks )
 
@@ -678,7 +759,7 @@ sub viewTags {
 	
 	$tags = pacify( $tags );
 	
-	if ( $label eq '' ) {
+	if ( $tags eq '' ) {
 		sendNotFound();
 	}
 	
@@ -689,7 +770,7 @@ sub viewTags {
 	}
 	
 	my %data = (
-		title	=> $label,
+		title	=> $tags,
 		body	=> 
 		"<p>Tag(s) requested <strong>$tags</strong> with " . 
 			"<strong>$verb</strong> on <em>$realm</em></p>" . 
