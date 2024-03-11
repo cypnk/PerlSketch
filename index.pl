@@ -42,6 +42,9 @@ use constant COOKIE_PATH	=> '/';
 # Request methods and path handler map
 our %path_map = (
 	get	=> [
+		# Main installation page
+		{ path => "install",			handler => \&viewInstall },
+		
 		# Blog-style page paths
 		{ path => ":year",			handler => \&viewPosts },
 		{ path => ":year/page:page",		handler => \&viewPosts },
@@ -351,6 +354,7 @@ sub render {
 sub storage {
 	my ( $path ) = @_;
 	
+	# Remove leading spaces and trailing slashes, if any
 	( my $dir = STORAGE_DIR ) =~ s/^[\s]+|[\s\/]+$//g;
 	
 	# Remove leading slashes and spaces, if any
@@ -420,6 +424,14 @@ sub preamble {
 		# Default content type html, charset UTF-8
 		print "Content-type: text/html; charset=UTF-8\n\n";
 	}
+}
+
+# Redirect to another path
+sub redirect {
+	my ( $path ) = @_;
+	httpCode( '303' );
+	print "Location: $path\n\n";
+	exit;
 }
 
 
@@ -705,8 +717,82 @@ END {
 
 
 
+# Cookie handling
+
+
+
+
+# Get all cookie data from request
+sub getCookies {
+	my @items	= split( /;/, $ENV{'HTTP_COOKIE'} //= '' );
+	my %sent;
+	
+	foreach ( @items ) {
+		my ( $k, $v )	= split( /=/, $_ );
+		
+		# Clean prefixes, if any
+		$k		=~ s/^__(Host|Secure)\-//gi;
+		$sent{$k}	= $v;
+	}
+	
+	return %sent;
+}
+
+# Set host/secure limiting prefix
+sub cookiePrefix {
+	return 
+	( COOKIE_PATH eq '/' && $request{'secure'} ) ? 
+		'__Host-' : ( $request{'secure'} ? '__Secure-' : '' );
+}
+
+# Set a cookie with default parameters
+sub setCookie {
+	my ( $name, $value, $ttl ) = @_;
+	my $prefix	= cookiePrefix();
+	
+	$ttl	//= COOKIE_EXP;
+	$ttl	= ( $ttl > 0 ) ? $ttl : 1;
+	
+	my @values	= ( 
+		$prefix . "$name=$value",
+		'Path=' . COOKIE_PATH,
+		'Max-Age=' . $ttl,
+		'SameSite=Strict',
+		'HttpOnly',
+	);
+	
+	if ( $request{'secure'} ) {
+		push ( @values, 'Secure' );
+	} 
+	
+	if ( $prefix eq '__Secure' || $prefix eq '' ) {
+		push ( @values, 'Domain=' . $request{'realm'} );
+	}
+	
+	my $cookie	= join( ';', @values );
+	print "Set-Cookie: $cookie\n";
+}
+
+sub deleteCookie {
+	my ( $name ) = @_;
+	setCookie( $name, "", -1 );
+}
+
+
 
 # Site views ( Also exit after completing their tasks )
+
+sub viewInstall {
+	my ( $realm, $verb, $params ) = @_;
+	
+	httpCode( '200' );
+	if ( $verb eq 'head' ) {
+		exit;
+	}
+	preamble();
+	print "TODO: Installation";
+	exit;
+}
 
 # TODO: Main homepage
 sub viewHome {
@@ -718,18 +804,28 @@ sub viewHome {
 		sendNotFound( $realm, $verb )
 	}
 	
+	httpCode( '200' );
 	if ( $verb eq 'head' ) {
-		httpCode( '200' );
 		# Nothing else to send
 		exit;
 	}
 	
+	my $cval	= '<p>Cookie values: ';
+	my %cookies	= getCookies();
+	
+	while ( my ( $k, $v ) = each %cookies ) {
+		$cval .= "$k -> $v\n";
+	}
+	$cval		.= '</p>';
+	
 	my %data = (
 		title	=> 'Your Homepage',
-		body	=> "<p>Home requested with {$verb} on {$realm}</p>"
+		body	=> "<p>Home requested with {$verb} on {$realm}</p>" . 
+			$cval
+			
 	);
 	
-	httpCode( '200' );
+	setCookie( 'Test Cookie', 'Some Value expiring in 400 seconds', 400 );
 	preamble();
 	render( $tpl, \%data );
 	exit;
@@ -748,12 +844,11 @@ sub viewArea {
 		sendNotFound();
 	}
 	
+	httpCode( '200' );
 	if ( $verb eq 'head' ) {
-		httpCode( '200' );
 		# Nothing else to send
 		exit;
 	}
-	
 	
 	my %data = (
 		title	=> $label,
@@ -763,7 +858,6 @@ sub viewArea {
 			 "<p>Page $page</p>"
 	);
 	
-	httpCode( '200' );
 	preamble();
 	
 	render( storage( "sites/$realm/index.html" ), \%data );
@@ -783,8 +877,8 @@ sub viewTags {
 		sendNotFound();
 	}
 	
+	httpCode( '200' );
 	if ( $verb eq 'head' ) {
-		httpCode( '200' );
 		# Nothing else to send
 		exit;
 	}
@@ -797,7 +891,6 @@ sub viewTags {
 			 "<p>Page $page</p>"
 	);
 	
-	httpCode( '200' );
 	preamble();
 	
 	render( storage( "sites/$realm/index.html" ), \%data );
@@ -815,8 +908,8 @@ sub viewPosts {
 	my $slug	= $params->{slug}	//= '';
 	my $page	= $params->{page}	//= 1;
 	
+	httpCode( '200' );
 	if ( $verb eq 'head' ) {
-		httpCode( '200' );
 		exit;
 	}
 	
@@ -828,7 +921,6 @@ sub viewPosts {
 			"<p>Page $page</p>"
 	);
 	
-	httpCode( '200' );
 	preamble();
 	
 	render( storage( "sites/$realm/index.html" ), \%data );
@@ -845,8 +937,8 @@ sub viewCreatePost {
 	
 	my $id		= $params->{id}		//= 0;
 	
+	httpCode( '200' );
 	if ( $verb eq 'head' ) {
-		httpCode( '200' );
 		exit;
 	}
 	
@@ -859,7 +951,6 @@ sub viewCreatePost {
 		form_title	=> 'New post'
 	);
 	
-	httpCode( '200' );
 	preamble();
 	
 	render( storage( "sites/$realm/newpost.html" ), \%data );
@@ -887,8 +978,8 @@ sub viewEditPost {
 	my $slug	= $params->{slug}	//= '';
 	my $id		= $params->{id}		//= 0;
 	
+	httpCode( '200' );
 	if ( $verb eq 'head' ) {
-		httpCode( '200' );
 		exit;
 	}
 	
@@ -901,7 +992,6 @@ sub viewEditPost {
 		form_title	=> 'Edit post'
 	);
 	
-	httpCode( '200' );
 	preamble();
 	
 	render( storage( "sites/$realm/editpost.html" ), \%data );
@@ -925,8 +1015,8 @@ sub viewArchive {
 	
 	my $page	= $params->{page}	//= 1;
 	
+	httpCode( '200' );
 	if ( $verb eq 'head' ) {
-		httpCode( '200' );
 		exit;
 	}
 	
@@ -937,7 +1027,6 @@ sub viewArchive {
 			"<p>Page $page</p>"
 	);
 	
-	httpCode( '200' );
 	preamble();
 	
 	render( storage( "sites/$realm/index.html" ), \%data );
@@ -951,12 +1040,11 @@ sub viewSearch {
 	my $all		= $params->{all}	//= '';
 	my $page	= $params->{page}	//= 1;
 	
+	httpCode( '200' );
 	if ( $verb eq 'head' ) {
-		httpCode( '200' );
 		exit;
 	}
 	
-	httpCode( '200' );
 	preamble();
 	$all = utfDecode( $all );
 	
