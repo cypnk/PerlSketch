@@ -1,4 +1,4 @@
-#!"E:\xampp\perl\bin\perl.exe" -wT
+#!"C:\xampp\perl\bin\perl.exe" -wT
 
 # This is typicaly #!/usr/bin/perl, but I'm currently testing this on a Windows PC wih XAMPP
 
@@ -289,8 +289,18 @@ our %http_codes = (
 	'501'	=> "501 Not Implemented"
 );
 
+
+
+# Database variables
+
+
+
 # Database connection handles
 our %dbh;
+
+# List of SQL database schema
+our %table_schema;
+
 
 
 
@@ -649,6 +659,43 @@ sub sendResource {
 
 
 
+# Read SQL table schema for each database in __DATA__ content
+sub loadSchemaData {
+	my @raw;
+	while ( my $line = <DATA> ) {
+		push ( @raw, $line );
+	}
+	
+	my $find	= join( '', @raw );
+	my $pattern	= qr/
+	--\s*Database:\s*   		# Database delimeter prefix
+		(?<base>[\w_]+\.db)	# Database name E.G. sessions.db
+	\s*--
+	
+	(?<schema>.*?)			# Table and index schema
+	
+	--\s*End\s*database\s*--	# Database delimeter suffix
+	/ixs;
+	
+	# Load schema list
+	%table_schema = ();
+	while ( $find =~ /$pattern/g ) {
+		$table_schema{$+{base}} = $+{schema};
+	}
+}
+
+# Collect database from schema list
+sub tableSchema {
+	my ( $label ) = @_;
+	
+	# Preload tables
+	if ( ! keys %table_schema ) {
+		loadSchemaData();
+	}
+	
+	return $table_schema{$label} //= '';
+}
+
 # Get database connection
 sub getDb {
 	my ( $db ) = @_;
@@ -689,7 +736,11 @@ sub getDb {
 		$dbh{$db}->do( 'PRAGMA temp_store = "2";' );
 		$dbh{$db}->do( 'PRAGMA secure_delete = "1";' );
 		
-		# TODO: Install SQL
+		# Install SQL, if available
+		my $schema = tableSchema( $db );
+		if ( $schema ne '' ) {
+			$dbh{$db}->do( $schema );
+		}
 		
 		# Instalation check
 		$dbh{$db}->do( 'PRAGMA integrity_check;' );
@@ -732,7 +783,7 @@ sub getCookies {
 		
 		# Clean prefixes, if any
 		$k		=~ s/^__(Host|Secure)\-//gi;
-		$sent{$k}	= $v;
+		$sent{pacify( $k )} = pacify( $v );
 	}
 	
 	return %sent;
@@ -751,15 +802,20 @@ sub setCookie {
 	my $prefix	= cookiePrefix();
 	
 	$ttl	//= COOKIE_EXP;
-	$ttl	= ( $ttl > 0 ) ? $ttl : 1;
+	$ttl	= ( $ttl > 0 ) ? $ttl : ( ( $ttl == -1 ) ? 1 : 0 );
 	
 	my @values	= ( 
 		$prefix . "$name=$value",
 		'Path=' . COOKIE_PATH,
-		'Max-Age=' . $ttl,
 		'SameSite=Strict',
 		'HttpOnly',
 	);
+	
+	# Session cookie expiration only handled by the browser
+	if ( $ttl != 0 ) {
+		push ( @values, 'Max-Age=' . $ttl );
+		push ( @values, 'Expires=' . gmtime( $ttl + time() ) .' GMT' );
+	}
 	
 	if ( $request{'secure'} ) {
 		push ( @values, 'Secure' );
@@ -769,7 +825,7 @@ sub setCookie {
 		push ( @values, 'Domain=' . $request{'realm'} );
 	}
 	
-	my $cookie	= join( ';', @values );
+	my $cookie	= join( '; ', @values );
 	print "Set-Cookie: $cookie\n";
 }
 
@@ -810,11 +866,11 @@ sub viewHome {
 		exit;
 	}
 	
-	my $cval	= '<p>Cookie values: ';
+	my $cval	= '<p>Cookie values (visible after first refresh): <br />';
 	my %cookies	= getCookies();
 	
 	while ( my ( $k, $v ) = each %cookies ) {
-		$cval .= "$k -> $v\n";
+		$cval .= "$k -> $v\<br />";
 	}
 	$cval		.= '</p>';
 	
@@ -822,10 +878,11 @@ sub viewHome {
 		title	=> 'Your Homepage',
 		body	=> "<p>Home requested with {$verb} on {$realm}</p>" . 
 			$cval
-			
 	);
 	
-	setCookie( 'Test Cookie', 'Some Value expiring in 400 seconds', 400 );
+	setCookie( 'Test Cookie', 'Some Value expiring in 400 seconds (ttl 400)', 400 );
+	setCookie( 'Session Cookie', 'Value should remain until browser decides to delete it (ttl 0)', 0 );
+	
 	preamble();
 	render( $tpl, \%data );
 	exit;
