@@ -2,6 +2,7 @@ RewriteEngine on
 
 # All requests to /storage folder
 RewriteCond %{REQUEST_URI} ^/storage [NC]
+RewriteRule ^.*$ /index.pl [L,QSA]
 
 # All files and folders that don't exist
 RewriteCond %{REQUEST_FILENAME} !-f
