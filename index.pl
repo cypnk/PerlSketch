@@ -467,6 +467,59 @@ sub siteRealm {
 	return $realm;
 }
 
+# Get requested file range, return range error if range was invalid
+sub requestRanges {
+	my $fr = $ENV{HTTP_RANGE} //= '';
+	if ( !$fr ) {
+		return ();
+	}
+	
+	# Range is too long
+	if ( length( $fr ) > 100 ) {
+		sendRangeError();
+	}
+	
+	my @ranges;
+	
+	# Check range header
+	while ( $fr =~ m/bytes\s*=\s*(?<ranges>(?:\d+-\d+(?:,\s*\d+-\d+)*))/g ) {
+		
+		my $capture = $+{ranges};
+		while ( $capture =~ /(?<range>\d+-(?:\d+)?)/g ) {
+			my ( $start, $end ) = split /-/, $+{range};
+			
+			# End can't be greater than start
+			if ( defined( $end ) && $start >= $end ) {
+				sendRangeError();
+			}
+			
+			# Check overlapping ranges
+			foreach my $check ( @ranges ) {
+				my ( $cs, $ce ) = @$check;
+				
+				# New range crosses prior start-end ranges?
+				if ( 
+					$start <= $ce	&& 
+					defined $end	&& 
+					$end >= $cs 
+				) {
+					sendRangeError();
+				}
+			}
+			
+			push( @ranges, [$start, $end] );
+		}
+	}
+	
+	# Invalid range syntax?
+	if ( !@ranges ) {
+		sendRangeError();
+	}
+	
+	# Send filtered file ranges
+	return @ranges;
+}
+
 # Guess if current request is secure
 sub isSecure {
 	# Request protocol scheme HTTP/HTTPS etc..
