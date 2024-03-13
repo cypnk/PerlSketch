@@ -1,6 +1,8 @@
 #!"C:\xampp\perl\bin\perl.exe" -wT
 
 # This is typicaly #!/usr/bin/perl, but I'm currently testing this on a Windows PC wih XAMPP
+# Change the top line to the following on *nix systems:
+#!/usr/bin/perl -wT
 
 package PerlSketch;
 
@@ -549,6 +551,15 @@ sub sendNotFound {
 	sendErrorResponse( $realm, $verb, 404 );
 }
 
+# Invalid file range request
+sub sendRangeError {
+	httpCode( '416' );
+	preamble( 1 );
+	print "Content-type: text/plain; charset=UTF-8\n\n";
+	print "Invalid file range requested";
+	exit;
+}
+
 # Simple send file (for text types)
 sub sendFile {
 	my ( $rs ) = @_;
@@ -581,8 +592,11 @@ sub streamFile {
 
 # TODO: Send ranged content
 sub streamRanged {
-	my ( $ranges ) = @_;
- 	
+	my ( $rs, $verb, $type, $ranges ) = @_;
+	
+	# TODO: Generate content boundary
+	httpCode( 206 );
+	# "Content-Type: multipart/byteranges; boundary=$bound",
 	exit;
 }
 
@@ -628,19 +642,25 @@ sub sendResource {
 	}
 	
 	
+	my $type	= $ext_list{$ext};
+	
+	# TODO: Scan for file request ranges
+	#my %ranges = requestRanges();
+	#if ( keys %ranges ) {
+	#	streamRanged( $rs, $verb, $type, \%$ranges );
+	#}
+	
+	httpCode( '200' );
+	
 	# End here if sending is not necessary
 	if ( $verb eq 'head' ) {
-		httpCode( '200' );
 		exit;
 	}
 	
-	# TODO: Scan for file request ranges
-	
-	httpCode( '200' );
 	preamble( 1, 1 );
 	
 	# Send the file content type header
-	print "Content-type: $ext_list{$ext}\n\n";
+	print "Content-type: $type\n\n";
 	
 	# Send simple mode if it's a text type
 	if ( grep( /^$ext$/, @text_types ) ) {
