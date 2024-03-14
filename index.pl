@@ -15,6 +15,8 @@ use Template;
 use File::Basename;
 use Encode;
 use DBI;
+use Digest::SHA qw(sha1_hex sha1_base64);
+use Fcntl qw( SEEK_SET );
 
 # Perl version
 use 5.32.1;
@@ -643,13 +645,97 @@ sub streamFile {
 	exit;
 }
 
-# TODO: Send ranged content
+# Send ranged content
 sub streamRanged {
 	my ( $rs, $verb, $type, $ranges ) = @_;
 	
-	# TODO: Generate content boundary
+	my $fsize	= -s $rs;
+	my $fend	= $fsize - 1;
+	
+	# Total byte size
+	my $totals	= 0;
+	
+	foreach my $r ( @ranges ) {
+		my ( $start, $end ) = @r;
+		if ( 
+			$start >= $fend ||
+			( defined $end && $end >= $fend ) 
+		) {
+			sendRangeError();
+		}
+		
+		$totals += ( defined $end ) ? 
+			( $start - $end ) + 1 :
+			( $fend - $start ) + 1;
+	}
+	
+	if ( $totals > $fend ) {
+		sendRangeError();
+	}
+	
+	# Generate content boundary
+	my $bound	= sha1_hex( $rs . $type );
+	
 	httpCode( 206 );
-	# "Content-Type: multipart/byteranges; boundary=$bound",
+	
+	# End here if this is a file range check only
+	if ( $verb eq 'head' ) {
+		exit;
+	}
+	
+	preamble( 1, 1 );
+	
+	print "Accept-Ranges: bytes\n";
+	print "Content-Type: multipart/byteranges; boundary=$bound\n";
+	print "Content-Length: $totals\n";
+	
+	# Binary output and file opened in raw mode
+	binmode STDOUT;
+	open( my $fh, '<:raw', $rs ) or exit 1;
+	
+	my $limit = 0;
+	my $buf;
+	my $chunk;
+	foreach my $range ( @ranges ) {
+		my ( $start, $end ) = @range;
+		
+		print "\n--$bound\n";
+		print "Content-type: $type\n\n";
+		
+		if ( defined $end ) {
+			$limit = $end - $start + 1;
+			print "Content-Range: bytes $start-$end/$fsize\n";
+		} else {
+			$limit = $fend - $start + 1;
+			print "Content-Range: bytes $start-$fend/$fsize\n";
+		}
+		
+		# Move to start position
+		my $cursor = seek( $fh, $start, SEEK_SET );
+		if ( ! $cursor ) {
+			close( $fh );
+			exit 1;
+		}
+		
+		# Send chunks until end of range
+		while ( $limit > 0 ) {
+			# Reset chunk size until below max buffer size
+			$chunk	= $limit > BUFFER_SIZE ? BUFFER_SIZE : $limit;
+			
+			my $ld	= read( $fh, $buf, $chunk );
+			if ( ! defined $ld || $ld == 0 ) {
+				# Something went wrong while reading 
+				# TODO : Log the error
+				close( $fh );
+				exit 1;
+			}
+			
+			print $buf;
+			$limit -= $ld;
+		}
+	}
+	
+	close( $fh );
 	exit;
 }
 
@@ -697,11 +783,11 @@ sub sendResource {
 	
 	my $type	= $ext_list{$ext};
 	
-	# TODO: Scan for file request ranges
-	#my %ranges = requestRanges();
-	#if ( keys %ranges ) {
-	#	streamRanged( $rs, $verb, $type, \%$ranges );
-	#}
+	# Scan for file request ranges
+	my @ranges = requestRanges();
+	if ( @ranges ) {
+		streamRanged( $rs, $verb, $type, \@ranges );
+	}
 	
 	httpCode( '200' );
 	
@@ -720,6 +806,7 @@ sub sendResource {
 		sendFile( $rs );
 	}
 	
+	print "Accept-Ranges: bytes\n";
 	# Buffered stream for everything else
 	streamFile( $rs );
 }
