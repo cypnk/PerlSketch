@@ -191,119 +191,11 @@ our %request	= (
 );
 
 # Generally safe to send as-is
-our @text_types	= qw(css js txt html vtt csv);
-	
-
-# Allowed file extensions and their content types
-our %ext_list	= (
-	'css'		=> "text/css",
-	'js'		=> "text/javascript",
-	'txt'		=> "text/plain",
-	'html'		=> "text/html",
-	'vtt'		=> "text/vtt",
-	'csv'		=> "text/csv",
-	
-	'ico'		=> "image/vnd.microsoft.icon",
-	'jpg'		=> "image/jpeg",
-	'jpeg'		=> "image/jepg",
-	'gif'		=> "image/gif",
-	'bmp'		=> "image/bmp",
-	'png'		=> "image/png",
-	'tif'		=> "image/tiff",
-	'tiff'		=> "image/tiff",
-	'svg'		=> "image/svg+xml",
-	'webp'		=> "image/webp",
-	
-	'ttf'		=> "font/ttf",
-	'otf'		=> "font/otf",
-	'woff'		=> "font/woff",
-	'woff2'		=> "font/woff2",
-	
-	'oga'		=> "audio/oga",
-	'mpa'		=> "audio/mpa",
-	'mp3'		=> "audio/mp3",
-	'm4a'		=> "audio/m4a",
-	'wav'		=> "audio/wav",
-	'wma'		=> "audio/wma",
-	'flac'		=> "audio/flac",
-	'weba'		=> "audio/webm",
-	
-	'avi'		=> "video/x-msvideo",
-	'mp4'		=> "video/mp4",
-	'mkv'		=> "video/x-matroska",
-	'mov'		=> "video/quicktime",
-	'ogg'		=> "video/ogg",
-	'ogv'		=> "video/ogg",
-	
-	'doc'		=> "application/msword",
-	'docx'		=> "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-	'ppt'		=> "application/vnd.ms-powerpoint",
-	'pptx'		=> "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-	'pdf'		=> "application/pdf",
-	'epub'		=> "application/epub+zip",
-	'zip'		=> "application/zip",
-	'7z'		=> "application/x-7z-compressed",
-	'gz'		=> "application/gzip",
-	'tar'		=> "application/x-tar"
-);
-
-# HTTP Response status codes
-our %http_codes = (
-	'200'	=> "200 OK",
-	'201'	=> "201 Created",
-	'202'	=> "202 Accepted",
-	
-	'204'	=> "204 No Content",
-	'205'	=> "205 Reset Content",
-	'206'	=> "206 Partial Content",
-	
-	'300'	=> "300 Multiple Choices",
-	'301'	=> "301 Moved Permanently",
-	'302'	=> "302 Found",
-	'303'	=> "303 See Other",
-	'304'	=> "304 Not Modified",
-	
-	'400'	=> "400 Bad Request",
-	'401'	=> "401 Unauthorized",
-	
-	'403'	=> "403 Denied",
-	'404'	=> "404 Not Found",
-	'405'	=> "405 Method Not Allowed",
-	'406'	=> "406 Not Acceptable",
-	'407'	=> "407 Proxy Authentication Required",
-	
-	'409'	=> "409 Conflict",
-	'410'	=> "410 Gone",
-	'411'	=> "411 Length Required",
-	'412'	=> "412 Precondition Failed",
-	'413'	=> "413 Payload Too Large",
-	'414'	=> "414 Request-URI Too Long",
-	'415'	=> "415 Unsupported Media Type",
-	'416'	=> "416 Range Not Satisfiable",
-	
-	'422'	=> "422 Unprocessable Entity",
-	
-	'425'	=> "425 Too Early",
-	
-	'429'	=> "429 Too Many Requests",
-	
-	'431'	=> "431 Request Header Fields Too Large",
-	
-	'500'	=> "500 Internal Server Error",
-	'501'	=> "501 Not Implemented"
-);
-
-
-
-# Database variables
-
-
+our @text_types	= qw(css js txt html vtt csv, svg);
 
 # Database connection handles
 our %dbh;
 
-# List of SQL database schema
-our %table_schema;
 
 
 
@@ -389,15 +281,83 @@ sub intRange {
 	( $out > $max ) ? $max : ( ( $out < $min ) ? $min : $out );
 }
 
+# Get raw __DATA__ content as text
+sub getRawData {
+	state $data = '';
+	if ( length ( $data ) ) {
+		return $data;
+	}
+	
+	my @raw;
+	while ( my $line = <DATA> ) {
+		push ( @raw, $line );
+	}
+	
+	$data = join( '', @raw );
+	return $data;
+}
+
+# Get allowed file extensions, content types, and file signatures ("magic numbers")
+sub mimeList { 
+	state %mime_list = ();
+	if ( keys %mime_list ) {
+		return %mime_list;
+	}
+	
+	my $data = getRawData();
+	
+	# Mime data block
+	while ( $data =~ /^(?<mime>--\s*MIME\s*data:\s*\n.*?\n--\s*End\s*mime\s*?data\s*)/msgi ) {
+		my $find = $+{mime};
+		chomp( $find );
+		
+		# Extension, type, and file signature(s)
+		while ( $find =~ /^(?<ext>\S+)\s+(?<type>\S+)\s+(?<sig>.*?)\s*$/mg ) {
+			my ( $ext, $type, $sig ) = ( $+{ext}, $+{type}, $+{sig} );
+			if ( ! defined( $type ) ) {
+				$type = 'application/octet-stream';
+			}
+			if ( ! defined( $sig ) ) {
+				$sig = '';
+			}
+			my @sig = split( /\s+/, $sig );
+			$mime_list{$ext} = { type => $type, sig => \@sig };
+		}
+	}
+	
+	return %mime_list;
+}
+
+
 
 
 # Response
 
 
 
+
 # Send HTTP status code
 sub httpCode {
-	my ( $code ) = @_;
+	my ( $code, $all ) = @_;
+	state %http_codes	= ();
+	
+	# Preload HTTP status codes
+	if ( !keys %http_codes ) {
+		my $data = getRawData();
+		while ( $data =~ /^(?<codes>--\s*HTTP\s*response\s*codes:\s*\n.*?\n--\s*End\s*response\s*codes\s*)/msgi ) {
+			my $find = $+{codes};
+			chomp( $find );
+			
+			while ( $find =~ /^(?<code>\S+)\s+(?<message>.*?)\s*$/mg ) {
+				$http_codes{$+{code}}	= $+{message};
+			}
+		}
+	}
+	
+	# If this is a list request only
+	if ( defined( $all ) ) {
+		return %http_codes;
+	}
 	
 	# Check if status is currently present
 	if ( !exists( $http_codes{$code} ) ) {
@@ -405,7 +365,7 @@ sub httpCode {
 		exit;
 	}
 	
-	print "Status: $http_codes{$code}\n";
+	print "Status: $code $http_codes{$code}\n";
 }
 
 # Safety headers
@@ -594,7 +554,6 @@ sub sendErrorResponse {
 	} else {
 		preamble( 1, 1 );
 		print "Content-type: text/plain; charset=UTF-8\n\n";
-		print $http_codes{$code};
 	}
 	
 	exit;
@@ -764,8 +723,12 @@ sub sendResource {
 		sendNotFound( $realm, $verb );
 	}
 	
+	# Mime type
+	my %mime_list	= mimeList();
+	my $type	= $mime_list{$ext}{type} //= '';
+	
 	# Not in whitelist?
-	if ( !exists ( $ext_list{$ext} ) ) {
+	if ( $type eq '' ) {
 		sendNotFound( $realm, $verb );
 	}
 	
@@ -779,9 +742,6 @@ sub sendResource {
 	if ( !-f $rs ) {
 		sendNotFound( $realm, $verb );
 	}
-	
-	
-	my $type	= $ext_list{$ext};
 	
 	# Scan for file request ranges
 	my @ranges = requestRanges();
@@ -820,13 +780,18 @@ sub sendResource {
 
 
 # Read SQL table schema for each database in __DATA__ content
-sub loadSchemaData {
-	my @raw;
-	while ( my $line = <DATA> ) {
-		push ( @raw, $line );
+sub databaseSchema {
+	my ( $label ) = @_;
+	
+	# List of SQL database schema
+	state %table_schema = ();
+	
+	if ( keys %table_schema ) {
+		return $table_schema{$label} //= '';
 	}
 	
-	my $find	= join( '', @raw );
+	# Preload tables
+	my $data	= getRawData();
 	my $pattern	= qr/
 	--\s*Database:\s*   		# Database delimeter prefix
 		(?<base>[\w_]+\.db)	# Database name E.G. sessions.db
@@ -838,21 +803,9 @@ sub loadSchemaData {
 	/ixs;
 	
 	# Load schema list
-	%table_schema = ();
-	while ( $find =~ /$pattern/g ) {
+	while ( $data =~ /$pattern/g ) {
 		$table_schema{$+{base}} = $+{schema};
 	}
-}
-
-# Collect database from schema list
-sub tableSchema {
-	my ( $label ) = @_;
-	
-	# Preload tables
-	if ( ! keys %table_schema ) {
-		loadSchemaData();
-	}
-	
 	return $table_schema{$label} //= '';
 }
 
@@ -897,7 +850,7 @@ sub getDb {
 		$dbh{$db}->do( 'PRAGMA secure_delete = "1";' );
 		
 		# Install SQL, if available
-		my $schema = tableSchema( $db );
+		my $schema = databaseSchema( $db );
 		if ( $schema ne '' ) {
 			$dbh{$db}->do( $schema );
 		}
@@ -1438,6 +1391,116 @@ sub begin() {
 begin();
 
 __DATA__
+
+
+-- MIME data:
+css	text/css
+js	text/javascript 
+txt	text/plain
+html	text/html
+vtt	text/vtt
+csv	text/csv
+svg	image/svg+xml
+
+ico	image/vnd.microsoft.icon	\x00\x00\x01\x00
+jpg	image/jpeg			\xFF\xD8\xFF\xE0  \xFF\xD8\xFF\xE1  \xFF\xD8\xFF\xEE  \xFF\xD8\xFF\xDB
+jpeg	image/jepg			\xFF\xD8\xFF\xE0  \xFF\xD8\xFF\xEE
+gif	image/gif			\x47\x49\x46\x38\x37\x61  \x47\x49\x46\x38\x39\x61
+bmp	image/bmp			\x42\x4D
+png	image/png			\x89\x50\x4E\x47\x0D\x0A\x1A\x0A
+tif	image/tiff			\x49\x49\x2A\x00  \x4D\x4D\x00\x2A
+tiff	image/tiff			\x49\x49\x2A\x00  \x4D\x4D\x00\x2A
+webp	image/webp			\x52\x49\x46\x46  \x57\x45\x42\x50
+
+ttf	font/ttf			\x00\x01\x00\x00\x00
+otf	font/otf			\x4F\x54\x54\x4F
+woff	font/woff			\x77\x4F\x46\x46
+woff2	font/woff2			\x77\x4F\x46\x32
+
+oga	audio/oga			\x4F\x67\x67\x53
+mpa	audio/mpa			\xFF\xE  \xFF\xF
+mp3	audio/mp3			\xFF\xFB  \xFF\xF3  \xFF\xF2  \x49\x44\x33
+m4a	audio/m4a			\x00\x00\x00\x18\x66\x74\x79\x70\x4D
+wav	audio/wav			\x52\x49\x46\x46  \x57\x41\x56\x45
+wma	audio/x-ms-wma			\x30\x26\xB2\x75\x8E\x66\xCF\x11  \xA6\xD9\x00\xAA\x00\x62\xCE\x6C
+flac	audio/flac			\x66\x4C\x61\x43\x00\x00\x00\x22
+weba	audio/webm			\x1A\x45\xDF\xA3
+
+avi	video/x-msvideo			\x52\x49\x46\x46  \x41\x56\x49\x20
+mp4	video/mp4			\x00\x00\x00\x18\x66\x74\x79\x70\x4D
+mpeg	video/mpeg			\xFF\xE  \xFF\xF
+mkv	video/x-matroska		\x1A\x45\xDF\xA3
+mov	video/quicktime			\x00\x00\x00\x14\x66\x74\x79\x70\x4D
+ogg	video/ogg			\x4F\x67\x67\x53
+ogv	video/ogg			\x4F\x67\x67\x53
+webm	video/webm			\x1A\x45\xDF\xA3
+wmv	video/x-ms-asf			\x30\x26\xB2\x75\x8E\x66\xCF\x11  \xA6\xD9\x00\xAA\x00\x62\xCE\x6C
+
+doc	application/msword		\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1
+docx	application/vnd.openxmlformats-officedocument.wordprocessingml.document		\x50\x4B\x03\x04
+ppt	application/vnd.ms-powerpoint	\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1
+pptx	application/vnd.openxmlformats-officedocument.presentationml.presentation	\x50\x4B\x03\x04  \x50\x4B\x07\x08
+odt	application/vnd.oasis.opendocument.text		\x50\x4B\x03\x04
+odp	application/vnd.oasis.opendocument.presentation	\x50\x4B\x03\x04
+ods	application/vnd.oasis.opendocument.spreadsheet	\x50\x4B\x03\x04
+ott	application/vnd.oasis.opendocument.text-template	\x50\x4B\x03\x04
+
+pdf	application/pdf			\x25\x50\x44\x46\x2D
+epub	application/epub+zip		\x50\x4B\x03\x04  \x50\x4B\x05\x06
+
+zip	pplication/zip			\x50\x4B\x03\x04  \x50\x4B\x05\x06
+7z	application/x-7z-compressed	\x37\x7A\xBC\xAF\x27\x1C
+gz	application/gzip		\x1F\x8B
+rar	application/vnd.rar		\x52\x61\x72\x21\x1A\x07
+tar	application/x-tar		\x75\x73\x74\x61\x72\x00\x30\x30  \x75\x73\x74\x61\x72\x20\x20\x00
+-- End mime data
+
+
+
+-- HTTP response codes:
+200	OK
+201	Created
+202	Accepted
+
+204	No Content
+205	Reset Content
+206	Partial Content
+
+300	Multiple Choices
+301	Moved Permanently
+302	Found
+303	See Other
+304	Not Modified
+
+400	Bad Request
+401	Unauthorized
+
+403	Denied
+404	Not Found
+405	Method Not Allowed
+406	Not Acceptable
+407	Proxy Authentication Required
+
+409	Conflict
+410	Gone
+411	Length Required
+412	Precondition Failed
+413	Payload Too Large
+414	Request-URI Too Long
+415	Unsupported Media Type
+416	Range Not Satisfiable
+
+422	Unprocessable Entity
+
+425	Too Early
+
+429	Too Many Requests
+
+431	Request Header Fields Too Large
+
+500	Internal Server Error
+501	Not Implemented
+-- End response codes 
 
 
 
