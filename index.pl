@@ -15,8 +15,10 @@ use Template;
 use File::Basename;
 use Encode;
 use DBI;
-use Digest::SHA qw(sha1_hex sha1_base64);
+use Digest::SHA qw( sha1_hex sha1_base64 );
 use Fcntl qw( SEEK_SET );
+use Time::HiRes ();
+use JSON qw( decode_json encode_json );
 
 # Perl version
 use 5.32.1;
@@ -41,6 +43,15 @@ use constant COOKIE_EXP		=> 604800;
 # Base domain path
 use constant COOKIE_PATH	=> '/';
 
+
+
+# Session defaults
+
+# Time before session cookie expires
+use constant SESSION_LIFETIME	=> 1800;
+
+# Time between cleaning up old cookies
+use constant SESSION_GC		=> 3600;
 
 
 # Request methods and path handler map
@@ -191,12 +202,10 @@ our %request	= (
 );
 
 # Generally safe to send as-is
-our @text_types	= qw(css js txt html vtt csv, svg);
+our @text_types	= qw(css js txt html vtt csv svg);
 
 # Database connection handles
 our %dbh;
-
-
 
 
 
@@ -344,7 +353,13 @@ sub httpCode {
 	# Preload HTTP status codes
 	if ( !keys %http_codes ) {
 		my $data = getRawData();
-		while ( $data =~ /^(?<codes>--\s*HTTP\s*response\s*codes:\s*\n.*?\n--\s*End\s*response\s*codes\s*)/msgi ) {
+		my $pattern = qr/
+		^(?<codes>--\s*HTTP\s*response\s*codes:\s*\n	# HTTP codes start
+		.*?						# Code list
+		\n--\s*End\s*response\s*codes\s*)		# End codes
+		/ixsm;
+	
+		while ( $data =~ /$pattern/g ) {
 			my $find = $+{codes};
 			chomp( $find );
 			
@@ -444,7 +459,11 @@ sub requestRanges {
 	my @ranges;
 	
 	# Check range header
-	while ( $fr =~ m/bytes\s*=\s*(?<ranges>(?:\d+-\d+(?:,\s*\d+-\d+)*))/g ) {
+	my $pattern	= qr/
+		bytes\s*=\s*				# Byte range heading
+		(?<ranges>(?:\d+-\d+(?:,\s*\d+-\d+)*))	# Comma delimeted ranges
+	/x;
+	while ( $fr =~ m/$pattern/g ) {
 		
 		my $capture = $+{ranges};
 		while ( $capture =~ /(?<range>\d+-(?:\d+)?)/g ) {
@@ -457,7 +476,7 @@ sub requestRanges {
 			
 			# Check overlapping ranges
 			foreach my $check ( @ranges ) {
-				my ( $cs, $ce ) = @$check;
+				my ( $cs, $ce ) = @{$check};
 				
 				# New range crosses prior start-end ranges?
 				if ( 
@@ -614,8 +633,8 @@ sub streamRanged {
 	# Total byte size
 	my $totals	= 0;
 	
-	foreach my $r ( @ranges ) {
-		my ( $start, $end ) = @r;
+	foreach my $r ( @{$ranges} ) {
+		my ( $start, $end ) = @{$r};
 		if ( 
 			$start >= $fend ||
 			( defined $end && $end >= $fend ) 
@@ -655,8 +674,8 @@ sub streamRanged {
 	my $limit = 0;
 	my $buf;
 	my $chunk;
-	foreach my $range ( @ranges ) {
-		my ( $start, $end ) = @range;
+	foreach my $range ( @{$ranges} ) {
+		my ( $start, $end ) = @{$range};
 		
 		print "\n--$bound\n";
 		print "Content-type: $type\n\n";
@@ -812,6 +831,7 @@ sub databaseSchema {
 # Get database connection
 sub getDb {
 	my ( $db ) = @_;
+	state @created;
 	
 	# Database connection string format
 	$db	= pacify( $db );
@@ -825,11 +845,11 @@ sub getDb {
 	
 	# Database file
 	my $df		= storage( $db );
-	my $first_run	= ( -f $df ) ? 0 : 1;
-	my $dsn		= "dbi:SQLite;dbname=$df";
+	my $first_run	= ( ! -f $df );
+	my $dsn		= "DBI:SQLite:dbname=$df";
 	
-	$dbh{$db}->connect( $dsn, "", "", {
-		AutoCommit		=> 0,
+	$dbh{$db}	= 
+	DBI->connect( $dsn, '', '', {
 		AutoInactiveDestroy	=> 0,
 		PrintError		=> 0,
 		RaiseError		=> 1,
@@ -843,6 +863,7 @@ sub getDb {
 	
 	# Prepare defaults if first run
 	if ( $first_run ) {
+		push( @created, $db );
 		$dbh{$db}->do( 'PRAGMA encoding = "UTF-8";' );
 		$dbh{$db}->do( 'PRAGMA page_size = "16384";' );
 		$dbh{$db}->do( 'PRAGMA auto_vacuum = "2";' );
@@ -852,7 +873,14 @@ sub getDb {
 		# Install SQL, if available
 		my $schema = databaseSchema( $db );
 		if ( $schema ne '' ) {
-			$dbh{$db}->do( $schema );
+			my @sql = split( /-- --/, $schema );
+			for my $stmt ( @sql ) {
+				$dbh{$db}->do( $stmt );
+			}
+		} else {
+			httpCode( 500 );
+			print "Database error";
+			exit;
 		}
 		
 		# Instalation check
@@ -875,6 +903,7 @@ sub closeDb {
 
 # Cleanup
 END {
+	sessionWriteClose();
 	closeDb();
 }
 
@@ -888,8 +917,12 @@ END {
 
 # Get all cookie data from request
 sub getCookies {
-	my @items	= split( /;/, $ENV{'HTTP_COOKIE'} //= '' );
-	my %sent;
+	state @items	= split( /;/, $ENV{'HTTP_COOKIE'} //= '' );
+	state %sent;
+	
+	if ( keys %sent ) {
+		return %sent;
+	}
 	
 	foreach ( @items ) {
 		my ( $k, $v )	= split( /=/, $_ );
@@ -900,6 +933,13 @@ sub getCookies {
 	}
 	
 	return %sent;
+}
+
+sub getCookieData {
+	my ( $key ) = @_;
+	my %cookies = getCookies();
+	
+	return $cookies{$key} //= '';
 }
 
 # Set host/secure limiting prefix
@@ -924,7 +964,7 @@ sub setCookie {
 		'HttpOnly',
 	);
 	
-	# Session cookie expiration only handled by the browser
+	# Cookies without explicit expiration left up to the browser
 	if ( $ttl != 0 ) {
 		push ( @values, 'Max-Age=' . $ttl );
 		push ( @values, 'Expires=' . gmtime( $ttl + time() ) .' GMT' );
@@ -946,6 +986,183 @@ sub deleteCookie {
 	my ( $name ) = @_;
 	setCookie( $name, "", -1 );
 }
+
+
+
+
+# Session management
+
+
+
+
+# Generate or return session ID
+sub sessionID {
+	my ( $sent ) = @_;
+	state $id = '';
+	
+	$sent ||= '';
+	if ( $sent ne '' ) {
+		$id = ( $sent =~ /^([a-zA-Z0-9]+)$/ ); 
+	}
+	
+	if ( $id eq '' ) {
+		# New pseudorandom ID
+		$id = Digest::SHA::sha256_hex( 
+			Time::HiRes::time() . rand( 2**32 ) 
+		);
+	} else {
+		return $id;
+	}
+	
+	# Store the ID into sessions database and return
+	my $db	= getDb( 'sessions.db' );
+	my $sth = 
+	$db->prepare( qq(
+		INSERT OR IGNORE INTO sessions ( session_id ) values ( ? ); 
+	) );
+	$sth->execute( $id ) and $sth->finish();
+	
+	return $id;
+}
+
+# Create a new session with blank data
+sub sessionNew {
+	sessionID( '' );
+	sessionSend();
+}
+
+# Read cookie data from database, given the ID
+sub sessionRead {
+	my ( $id ) = @_;
+	
+	# Strip any non-cookie ID data
+	my ( $find ) = $id =~ /^([a-zA-Z0-9]+)$/;
+	
+	my $db	= getDb( 'sessions.db' );
+	my $sth	= $db->prepare( qq(
+		SELECT session_data FROM sessions 
+			WHERE session_id = ? LIMIT 1;
+	) );
+	$sth->execute( $find );
+	my $data = $sth->fetchrow_hashref and $sth->finish;
+	
+	# Load data to session, if it exists
+	if ( $data ) {
+		return $data->{session_data};
+	}
+	
+	return '';
+}
+
+# Start session with ID, if given, or a fresh session
+sub sessionStart {
+	my ( $id ) = @_;
+	
+	state $start = 0;
+	if ( $start ) {
+		return;
+	}
+	
+	# Get raw ID from cookie
+	$id	||= getCookieData( 'session' );
+	
+	# Clean ID
+	$id	= pacify( $id );
+	$id	=~ /^([a-zA-Z0-9]{20,255})$/;
+	
+	# Mark started
+	$start	= 1;
+	
+	if ( $id eq '' ) {
+		# New session data
+		sessionNew();
+		return;
+	}
+	
+	my $data = sessionRead( $id );
+	
+	# Invalid existing cookie? Reset
+	if ( $data eq '' ) {
+		sessionNew();
+		return;
+	}
+	
+	# Session exists? Load data
+	my $values = decode_json( "$data" );
+	sessionID( $id );
+	
+	foreach my $key ( %{$values} ) {
+		sessionWrite( $key, $values->{$key} );
+	}
+}
+
+# Get data by session key value
+sub sessionGet {
+	my ( $key ) = @_;
+	
+	sessionStart();
+	my %data = sessionWrite();
+	return $data{$key} //= '';
+}
+
+# Get or store session data to scoped hash
+sub sessionWrite {
+	my ( $key, $value ) = @_;
+	
+	# Session stroage data
+	state %session_data = ();
+	
+	if ( $key ) {
+		$session_data{$key} = $value;
+		return;
+	}
+	
+	return %session_data;
+}
+
+# Send session cookie
+sub sessionSend {
+	setCookie( 'session', sessionID(), SESSION_LIFETIME );
+}
+
+# Delete seession
+sub sessionDestroy {
+	my ( $id ) = @_;
+	my $db		= getDb( 'sessions.db' );
+	
+	$db->do( 'DELETE FROM sessions WHERE session_id = ?;', undef, $id );
+}
+
+# Garbage collection
+sub sessionGC {
+	my $db		= getDb( 'sessions.db' );
+	
+	# Delete sessions exceeding garbage collection timeframe
+	my $sth = 
+	$db->prepare( qq(
+		DELETE FROM sessions WHERE (
+		strftime( '%s', 'now' ) - 
+		strftime( '%s', updated ) ) > ? ;
+	) );
+	$sth->execute( SESSION_GC ) and $sth->finish;
+}
+
+# Finish and save session data, if it exists
+sub sessionWriteClose {
+	my $db		= getDb( 'sessions.db' );
+	my $sth		= $db->prepare( qq(
+		REPLACE INTO sessions ( session_id, session_data ) 
+			VALUES( ?, ? );' 
+	) );
+	
+	my %data = sessionWrite();
+	
+	$sth->execute( 
+		sessionID(),
+		encode_json( \%data )
+	) and $sth->finish;
+}
+
 
 
 
@@ -987,14 +1204,18 @@ sub viewHome {
 	}
 	$cval		.= '</p>';
 	
+	my $stime = sessionGet( 'start' );
+	if ( $stime eq '' ) {
+		$stime = time();
+		sessionWrite( 'start', $stime );
+	}
+	
 	my %data = (
 		title	=> 'Your Homepage',
 		body	=> "<p>Home requested with {$verb} on {$realm}</p>" . 
+			"<p>Your session started at {$stime}</p>" . 
 			$cval
 	);
-	
-	setCookie( 'Test Cookie', 'Some Value expiring in 400 seconds (ttl 400)', 400 );
-	setCookie( 'Session Cookie', 'Value should remain until browser decides to delete it (ttl 0)', 0 );
 	
 	preamble();
 	render( $tpl, \%data );
