@@ -10,6 +10,9 @@ package PerlSketch;
 use strict;
 use warnings;
 
+# Default encoding
+use utf8;
+
 # Modules in use
 use Template;
 use File::Basename;
@@ -204,12 +207,11 @@ our %request	= (
 # Generally safe to send as-is
 our @text_types	= qw(css js txt html vtt csv svg);
 
-# Database connection handles
-our %dbh;
 
 
 
 # Basic filtering
+
 
 
 # Usable text content
@@ -261,7 +263,7 @@ sub render {
 	# Template module with options
 	my $tpl		= Template->new( $settings );
 	
-	binmode STDOUT;
+	binmode( STDOUT, ":encoding(UTF-8)" );
 	$tpl->process( $html, $params ) or exit 1;
 }
 
@@ -593,30 +595,23 @@ sub sendRangeError {
 	exit;
 }
 
-# Simple send file (for text types)
+# Simple send or buffered stream file
 sub sendFile {
-	my ( $rs ) = @_;
-	
-	open( my $fh, '<', $rs ) or exit 1;
-	while ( my $r = <$fh> ) {
-		print $r;
-	}
-	
-	close( $fh );
-	exit;
-}
-
-# Send file buffered
-sub streamFile {
-	my ( $rs ) = @_;
+	my ( $rs, $stream ) = @_;
 	
 	# Binary output and file opened in raw mode
-	binmode STDOUT;
+	binmode( STDOUT );
 	open( my $fh, '<:raw', $rs ) or exit 1;
 	
-	my $buf;
-	while ( read( $fh, $buf, BUFFER_SIZE ) ) {
-		print $buf;
+	if ( $stream ) {
+		my $buf;
+		while ( read( $fh, $buf, BUFFER_SIZE ) ) {
+			print $buf;
+		}
+	} else {
+		while ( my $r = <$fh> ) {
+			print $r;
+		}
 	}
 	
 	close( $fh );
@@ -668,7 +663,7 @@ sub streamRanged {
 	print "Content-Length: $totals\n";
 	
 	# Binary output and file opened in raw mode
-	binmode STDOUT;
+	binmode( STDOUT );
 	open( my $fh, '<:raw', $rs ) or exit 1;
 	
 	my $limit = 0;
@@ -782,12 +777,12 @@ sub sendResource {
 	
 	# Send simple mode if it's a text type
 	if ( grep( /^$ext$/, @text_types ) ) {
-		sendFile( $rs );
+		sendFile( $rs, 0 );
 	}
 	
 	print "Accept-Ranges: bytes\n";
 	# Buffered stream for everything else
-	streamFile( $rs );
+	sendFile( $rs, 1 );
 }
 
 
@@ -830,8 +825,25 @@ sub databaseSchema {
 
 # Get database connection
 sub getDb {
-	my ( $db ) = @_;
+	my ( $db, $close ) = @_;
 	state @created;
+	
+	# Database connection handles
+	state %dbh;
+	
+	if ( $close ) {
+		if ( ! keys %dbh ) {
+			return;
+		}
+		
+		# Close every open connection
+		foreach my $key ( keys %dbh ) {
+			$dbh{$key}->disconnect();
+		}
+		%dbh = ();
+		return;
+	}
+	
 	
 	# Database connection string format
 	$db	= pacify( $db );
@@ -894,17 +906,10 @@ sub getDb {
 	return $dbh{$db};
 }
 
-# Close every open connection
-sub closeDb {
-	foreach my $key ( keys %dbh ) {
-		$dbh{$key}->disconnect();
-	}
-}
-
 # Cleanup
 END {
 	sessionWriteClose();
-	closeDb();
+	getDb( undef, 1 );
 }
 
 
@@ -1002,7 +1007,7 @@ sub sessionID {
 	
 	$sent ||= '';
 	if ( $sent ne '' ) {
-		$id = ( $sent =~ /^([a-zA-Z0-9]+)$/ ); 
+		$id = ( $sent =~ /^([a-zA-Z0-9]{20,255})$/ ); 
 	}
 	
 	if ( $id eq '' ) {
@@ -1010,17 +1015,7 @@ sub sessionID {
 		$id = Digest::SHA::sha256_hex( 
 			Time::HiRes::time() . rand( 2**32 ) 
 		);
-	} else {
-		return $id;
 	}
-	
-	# Store the ID into sessions database and return
-	my $db	= getDb( 'sessions.db' );
-	my $sth = 
-	$db->prepare( qq(
-		INSERT OR IGNORE INTO sessions ( session_id ) values ( ? ); 
-	) );
-	$sth->execute( $id ) and $sth->finish();
 	
 	return $id;
 }
@@ -1031,12 +1026,27 @@ sub sessionNew {
 	sessionSend();
 }
 
+# Get or store session data to scoped hash
+sub sessionWrite {
+	my ( $key, $value ) = @_;
+	
+	# Session stroage data
+	state %session_data = ();
+	
+	if ( $key ) {
+		$session_data{$key} = $value;
+		return;
+	}
+	
+	return %session_data;
+}
+
 # Read cookie data from database, given the ID
 sub sessionRead {
 	my ( $id ) = @_;
 	
 	# Strip any non-cookie ID data
-	my ( $find ) = $id =~ /^([a-zA-Z0-9]+)$/;
+	my ( $find ) = $id =~ /^([a-zA-Z0-9]{20,255})$/;
 	
 	my $db	= getDb( 'sessions.db' );
 	my $sth	= $db->prepare( qq(
@@ -1087,10 +1097,10 @@ sub sessionStart {
 		return;
 	}
 	
-	# Session exists? Load data
-	my $values = decode_json( "$data" );
+	# Restore session from cookie
 	sessionID( $id );
 	
+	my $values = decode_json( "$data" );
 	foreach my $key ( %{$values} ) {
 		sessionWrite( $key, $values->{$key} );
 	}
@@ -1103,21 +1113,6 @@ sub sessionGet {
 	sessionStart();
 	my %data = sessionWrite();
 	return $data{$key} //= '';
-}
-
-# Get or store session data to scoped hash
-sub sessionWrite {
-	my ( $key, $value ) = @_;
-	
-	# Session stroage data
-	state %session_data = ();
-	
-	if ( $key ) {
-		$session_data{$key} = $value;
-		return;
-	}
-	
-	return %session_data;
 }
 
 # Send session cookie
@@ -1149,13 +1144,18 @@ sub sessionGC {
 
 # Finish and save session data, if it exists
 sub sessionWriteClose {
+	my %data = sessionWrite();
+	
+	# Skip writing if there is no data
+	if ( ! keys %data ) {
+		return;
+	}
+	
 	my $db		= getDb( 'sessions.db' );
 	my $sth		= $db->prepare( qq(
 		REPLACE INTO sessions ( session_id, session_data ) 
 			VALUES( ?, ? );' 
 	) );
-	
-	my %data = sessionWrite();
 	
 	$sth->execute( 
 		sessionID(),
