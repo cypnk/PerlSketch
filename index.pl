@@ -204,10 +204,6 @@ our %request	= (
 	'query'		=> $ENV{QUERY_STRING}		//= ''
 );
 
-# Generally safe to send as-is
-our @text_types	= qw(css js txt html vtt csv svg);
-
-
 
 
 # Basic filtering
@@ -770,19 +766,25 @@ sub sendResource {
 		exit;
 	}
 	
+	# Test for type (has file signatures or "magic numbers")
+	if ( exists( $mime_list{$ext}{sig} ) ) {
+		print "Accept-Ranges: bytes\n";
+		preamble( 1, 1 );
+	
+		# Send the file content type header
+		print "Content-type: $type\n\n";
+		
+		# Buffered stream
+		sendFile( $rs, 1 );
+	}
+	
 	preamble( 1, 1 );
 	
 	# Send the file content type header
 	print "Content-type: $type\n\n";
 	
-	# Send simple mode if it's a text type
-	if ( grep( /^$ext$/, @text_types ) ) {
-		sendFile( $rs, 0 );
-	}
-	
-	print "Accept-Ranges: bytes\n";
-	# Buffered stream for everything else
-	sendFile( $rs, 1 );
+	# Types without signatures are text. Send as-is
+	sendFile( $rs, 0 );
 }
 
 
@@ -1144,6 +1146,13 @@ sub sessionGC {
 
 # Finish and save session data, if it exists
 sub sessionWriteClose {
+	state $written	= 0;
+	
+	# Avoid double write and close
+	if ( $written ) {
+		return;
+	}
+	
 	my %data = sessionWrite();
 	
 	# Skip writing if there is no data
@@ -1161,6 +1170,8 @@ sub sessionWriteClose {
 		sessionID(),
 		encode_json( \%data )
 	) and $sth->finish;
+	
+	$written = 1;
 }
 
 
@@ -1614,6 +1625,21 @@ begin();
 __DATA__
 
 
+Configuration and lists:
+The following is a set of settings used by PerlSketch to serve content.
+
+MIME Data consists of a file extension, a MIME type (to send to the browser),
+and a set of file signatures or "magic numbers", which are the first few bytes 
+of a file which give an indication of what type of file this is. This method is 
+used as a quick way to detect file types without having to open the entire file.
+
+Files without signatures are treated as text types. E.G. css, js, html etc...
+
+More file types may be added to this list.
+
+Convention: 
+File extension	MIME type	Byte signature(s) delimited by spaces
+
 -- MIME data:
 css	text/css
 js	text/javascript 
@@ -1678,6 +1704,21 @@ tar	application/x-tar		\x75\x73\x74\x61\x72\x00\x30\x30  \x75\x73\x74\x61\x72\x2
 
 
 
+The following are a set of HTTP response codes sent to the user before the any 
+other headers, including the preamble and content types. This response is 
+required for the script to function correctly when serving web pages.
+
+The most common type should be 200 OK to indicate the request has succeeded.
+Next is likely 404 Not Found to indicate a particular resource hasn't been 
+located at the address used by the visitor.
+
+Some responses have been ommitted as they should be handled at the web server 
+level instead of at the Perl script, and/or they're unsuitable to implement 
+here.
+
+Convention: 
+Numeric code	Text message
+
 -- HTTP response codes:
 200	OK
 201	Created
@@ -1725,6 +1766,15 @@ tar	application/x-tar		\x75\x73\x74\x61\x72\x00\x30\x30  \x75\x73\x74\x61\x72\x2
 
 
 
+Site databases section.
+
+These table schema don't use any special functionality unique to SQLite and can 
+be adapted to other databse types if neeed, however the data methods would need 
+to be updated to reflect the new database type(s).
+
+The following is the session storage database as a SQLite schema. The main 
+sessions table is the only table in the sessions.db database.
+
 
 -- Database: sessions.db --
 
@@ -1753,6 +1803,12 @@ END;
 -- End database --
 
 
+
+The following is the main content database, including the user credential 
+tables. The schema is designed to handle multiple regions or "realms", which 
+include the domain name and relative path. Multiple websites can be created, 
+each with its own unique domain name or relative path.
+E.G. example.com or example.com/second-site
 
 
 
@@ -2049,4 +2105,34 @@ BEGIN
 END;-- --
 
 -- End database --
+
+
+
+__END__
+
+BSD 2-Clause License
+
+Copyright (c) 2024, Rustic Cyberpunk
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 
