@@ -139,7 +139,24 @@ our %path_map = (
 		{ path => ":file",			handler=> \&sendResource },
 		
 		{ path => "",				handler => \&viewHome },
-	]
+	],
+ 
+	options => [
+		{ path => "install",			handler => \&viewInstall },
+  		
+		{ path => "new",			handler => \&handleCreatePost },
+		{ path => "edit",			handler => \&handleEditPost },
+  		
+  		{ path => "login",			handler => \&viewLogin },
+		{ path => "register",			handler => \&viewRegister },
+		{ path => "profile",			handler => \&viewProfile },
+		{ path => "password",			handler => \&viewChangePass },
+  
+		{ path => "new/:year/:month/:day",	handler => \&viewCreatePost },
+		{ path => "new",			handler => \&viewCreatePost },
+		
+  		{ path => "edit/:year/:month/:day/:slug",handler => \&viewEditPost }
+ 	]
 );
 
 # URL routing placeholders
@@ -414,6 +431,18 @@ sub preamble {
 	}
 }
 
+# Set the CORS origin to current URL
+sub sendOrigin {
+	my ( $realm, $root ) = @_;
+ 	
+  	$realm	||= $request{'realm'};
+ 	$root	||= '/';
+	
+ 	my $http = ( $request{'secure'} ) ? 'http://' : 'https://';
+   	my $path = $http . $realm . $root;
+ 	print "Access-Control-Allow-Origin: $path\n";
+}
+
 # Redirect to another path
 sub redirect {
 	my ( $path ) = @_;
@@ -522,15 +551,17 @@ sub isSecure {
 
 # Send allowed options header in request mode and invalid method mode
 sub sendOptions {
-	my ( $fail ) = @_;
+	my ( $fail, $allow ) = @_;
 	
 	# Set fail to off by default
-	$fail	//= 0;
-	
+	$fail	||= 0;
+	$allow	||= 'GET, POST, HEAD, OPTIONS';
+ 
 	# Fail mode?, send 405 HTTP status code, default 200 OK
 	httpCode( $fail ? '405' : '200' );
-	
-	print "Allow: GET, POST, HEAD, OPTIONS\n";
+	print $fail ? 
+ 		"Allow: $allow\n" : 
+ 		"Access-Control-Allow-Methods: $allow\n";
 	exit;
 }
 
@@ -1165,7 +1196,7 @@ sub sessionWriteClose {
 	my $db		= getDb( 'sessions.db' );
 	my $sth		= $db->prepare( qq(
 		REPLACE INTO sessions ( session_id, session_data ) 
-			VALUES( ?, ? );' 
+			VALUES( ?, ? );
 	) );
 	
 	$sth->execute( 
@@ -1176,6 +1207,26 @@ sub sessionWriteClose {
 	$written = 1;
 }
 
+# Create a typical response for a limited access view, E.G. login page etc...
+sub safeView {
+	my ( $realm, $verb ) = @_;
+ 	
+	httpCode( '200' );
+ 	if ( $verb eq 'head' ) {
+  		# Nothing else to send
+  		exit;
+  	}
+   	
+   	if ( $verb eq 'options' ) {
+    		sendOptions();
+ 		sendOrigin( $realm );
+      		exit;
+    	}
+     	
+	sendOrigin( $realm );
+	preamble();
+}
+
 
 
 
@@ -1184,11 +1235,7 @@ sub sessionWriteClose {
 sub viewInstall {
 	my ( $realm, $verb, $params ) = @_;
 	
-	httpCode( '200' );
-	if ( $verb eq 'head' ) {
-		exit;
-	}
-	preamble();
+	safeView( $realm, $verb );
 	print "TODO: Installation";
 	exit;
 }
@@ -1222,6 +1269,7 @@ sub viewHome {
 		$stime = time();
 		sessionWrite( 'start', $stime );
 	}
+	preamble();
 	
 	my %data = (
 		title	=> 'Your Homepage',
@@ -1230,7 +1278,6 @@ sub viewHome {
 			$cval
 	);
 	
-	preamble();
 	render( $tpl, \%data );
 	exit;
 }
@@ -1253,7 +1300,9 @@ sub viewArea {
 		# Nothing else to send
 		exit;
 	}
-	
+
+	preamble();
+ 
 	my %data = (
 		title	=> $label,
 		body	=> 
@@ -1261,8 +1310,6 @@ sub viewArea {
 			"<strong>$verb</strong> on <em>$realm</em></p>" . 
 			 "<p>Page $page</p>"
 	);
-	
-	preamble();
 	
 	render( storage( "sites/$realm/index.html" ), \%data );
 	exit;
@@ -1286,6 +1333,8 @@ sub viewTags {
 		# Nothing else to send
 		exit;
 	}
+ 	
+	preamble();
 	
 	my %data = (
 		title	=> $tags,
@@ -1294,9 +1343,7 @@ sub viewTags {
 			"<strong>$verb</strong> on <em>$realm</em></p>" . 
 			 "<p>Page $page</p>"
 	);
-	
-	preamble();
-	
+ 	
 	render( storage( "sites/$realm/index.html" ), \%data );
 	exit;
 }
@@ -1347,10 +1394,7 @@ sub viewCreatePost {
 	
 	my $id		= $params->{id}		//= 0;
 	
-	httpCode( '200' );
-	if ( $verb eq 'head' ) {
-		exit;
-	}
+	safeView( $realm, $verb );
 	
 	my %data = (
 		title		=> 'New post view',
@@ -1361,7 +1405,6 @@ sub viewCreatePost {
 		form_title	=> 'New post'
 	);
 	
-	preamble();
 	render( $tpl, \%data );
 	exit;
 }
@@ -1387,10 +1430,7 @@ sub viewEditPost {
 	my $slug	= $params->{slug}	//= '';
 	my $id		= $params->{id}		//= 0;
 	
-	httpCode( '200' );
-	if ( $verb eq 'head' ) {
-		exit;
-	}
+	safeView( $realm, $verb );
 	
 	my %data = (
 		title		=> 'Edit existing post',
@@ -1400,9 +1440,6 @@ sub viewEditPost {
 		
 		form_title	=> 'Edit post'
 	);
-	
-	preamble();
-	
 	render( storage( "sites/$realm/editpost.html" ), \%data );
 	exit;
 }
@@ -1476,8 +1513,7 @@ sub viewRegister {
 		form_title	=> 'Register'
 	);
 	
-	httpCode( '200' );
-	preamble();
+	safeView( $realm, $verb );
 	
 	render( storage( "sites/$realm/register.html" ), \%data );
 	exit;
@@ -1506,8 +1542,7 @@ sub viewLogin {
 		form_title	=> 'Login'
 	);
 	
-	httpCode( '200' );
-	preamble();
+	safeView( $realm, $verb );
 	
 	render( storage( "sites/$realm/login.html" ), \%data );
 	exit;
@@ -1536,8 +1571,7 @@ sub viewProfile {
 		form_title	=> 'Profile'
 	);
 	
-	httpCode( '200' );
-	preamble();
+	safeView( $realm, $verb );
 	
 	render( storage( "sites/$realm/profile.html" ), \%data );
 	exit;
@@ -1566,8 +1600,7 @@ sub viewChangePass {
 		form_title	=> 'Password'
 	);
 	
-	httpCode( '200' );
-	preamble();
+	safeView( $realm, $verb );
 	
 	#render( storage( "sites/$realm/password.html" ), \%data );
 	exit;
@@ -1588,12 +1621,6 @@ sub begin() {
 	my $verb 	= $request{'verb'};
 	
 	my $realm	= $request{'realm'};
-	
-	# Send options, if asked
-	# TODO: Limit options based on realm
-	if ( $verb eq 'options' ) {
-		sendOptions();
-	}
 	
 	# Begin router
 	if ( exists ( $path_map{$verb} ) ) {
