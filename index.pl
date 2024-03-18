@@ -85,6 +85,7 @@ our %path_map = (
 		
 		# Optional area or homepage
 		{ path => "pages/:slug",		handler => \&viewArea },
+		{ path => "pages/:slug/page:page",	handler => \&viewArea },
 		
 		# Tag/category content
 		{ path => "tags/:tags",			handler => \&viewTags },
@@ -759,23 +760,19 @@ sub sendResource {
 		streamRanged( $rs, $verb, $type, \@ranges );
 	}
 	
+	# Test for type (has file signatures or "magic numbers")
+	# Types without signatures are treated as text
+	my $text = exists( $mime_list{$ext}{sig} ) ? 0 : 1;
+	
 	httpCode( '200' );
+	if ( !$text ) 
+		# Allow ranges for non-text types
+		print "Accept-Ranges: bytes\n";
+	}
 	
 	# End here if sending is not necessary
 	if ( $verb eq 'head' ) {
 		exit;
-	}
-	
-	# Test for type (has file signatures or "magic numbers")
-	if ( exists( $mime_list{$ext}{sig} ) ) {
-		print "Accept-Ranges: bytes\n";
-		preamble( 1, 1 );
-	
-		# Send the file content type header
-		print "Content-type: $type\n\n";
-		
-		# Buffered stream
-		sendFile( $rs, 1 );
 	}
 	
 	preamble( 1, 1 );
@@ -783,8 +780,13 @@ sub sendResource {
 	# Send the file content type header
 	print "Content-type: $type\n\n";
 	
-	# Types without signatures are text. Send as-is
-	sendFile( $rs, 0 );
+	# Send text as-is
+	if ( $text ) {
+		sendFile( $rs, 0 );
+	}
+	
+	# Buffered stream
+	sendFile( $rs, 1 );
 }
 
 
@@ -1197,7 +1199,7 @@ sub viewHome {
 	# Homepage template
 	my $tpl = storage( "sites/$realm/index.html" );
 	
-	if ( !-f $tpl ) {
+	if ( ! -f $tpl ) {
 		sendNotFound( $realm, $verb )
 	}
 	
@@ -1333,6 +1335,12 @@ sub viewPosts {
 sub viewCreatePost {
 	my ( $realm, $verb, $params ) = @_;
 	
+	my $tpl = storage( "sites/$realm/newpost.html" );
+	
+	if ( ! -f $tpl ) {
+		sendNotFound( $realm, $verb )
+	}
+	
 	my $year	= $params->{year}	//= 0;
 	my $month	= $params->{month}	//= 0;
 	my $day		= $params->{day}	//= 0;
@@ -1354,8 +1362,7 @@ sub viewCreatePost {
 	);
 	
 	preamble();
-	
-	render( storage( "sites/$realm/newpost.html" ), \%data );
+	render( $tpl, \%data );
 	exit;
 }
 
