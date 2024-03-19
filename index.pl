@@ -21,6 +21,7 @@ use DBI;
 use Digest::SHA qw( sha1_hex sha1_base64 );
 use Fcntl qw( SEEK_SET );
 use Time::HiRes ();
+use Time::Piece;
 use JSON qw( decode_json encode_json );
 
 # Perl version
@@ -353,6 +354,43 @@ sub mimeList {
 	return %mime_list;
 }
 
+# Timestamp helper
+sub dateRfc {
+	my ( $stamp ) = @_;
+ 	my $t = Time::Piece->strptime( $stamp, '%s' );
+ 	return $t->strftime();
+}
+
+# Set expires header
+sub setCacheExp {
+	my ( $ttl ) = @_;
+	
+	my $exp = dateRfc( time() + $ttl );
+	print "Cache-Control: max-age=$ttl\n";
+	print "Expires: $exp\n";
+}
+
+# Generate HTTP entity tag and related headers
+sub genFileHeaders {
+	my ( $rs ) = @_;
+	if ( ! -f $rs ) {
+		return;
+	}
+	
+	my $fsize	= -s $rs;
+	my $mtime	= ( stat( $rs ) )[9];
+	my $lmod	= dateRfc( $mtime );
+ 	
+	# Similar to Nginx ETag algo
+	my $etag		= 
+	\sprintf( "%x-%x", 
+		$mtime		//= 0, 
+		$fsize		//= 0
+	);
+	print "Content-Length: $fsize\n";
+	print "Last-Modified: $lmod\n";
+	print "ETag: $etag\n";
+}
 
 
 
@@ -806,6 +844,7 @@ sub sendResource {
 		exit;
 	}
 	
+	genFileHeaders( $rs );
 	preamble( 1, 1 );
 	
 	# Send the file content type header
@@ -1210,19 +1249,21 @@ sub sessionWriteClose {
 # Create a typical response for a limited access view, E.G. login page etc...
 sub safeView {
 	my ( $realm, $verb ) = @_;
- 	
+	
+	if ( $verb eq 'options' ) {
+		httpCode( '204' );
+		sendOptions();
+		setCacheExp( 604800 );
+		sendOrigin( $realm );
+		exit;
+	}
+	
 	httpCode( '200' );
- 	if ( $verb eq 'head' ) {
-  		# Nothing else to send
-  		exit;
-  	}
-   	
-   	if ( $verb eq 'options' ) {
-    		sendOptions();
- 		sendOrigin( $realm );
-      		exit;
-    	}
-     	
+	if ( $verb eq 'head' ) {
+		# Nothing else to send
+		exit;
+	}
+	
 	sendOrigin( $realm );
 	preamble();
 }
