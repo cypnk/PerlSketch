@@ -1278,7 +1278,7 @@ sub safeView {
 
 # Generate a random hash salt
 sub genSalt {
-	return en_base64( makerandom_octet( ( Length => 12 ) );
+	return en_base64( makerandom_octet( ( Length => 16 ) );
 }
 
 # Hash password to storage safe format
