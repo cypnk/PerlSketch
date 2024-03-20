@@ -18,11 +18,13 @@ use Template;
 use File::Basename;
 use Encode;
 use DBI;
-use Digest::SHA qw( sha1_hex sha1_base64 );
+use Digest::SHA qw( sha1_hex sha1_base64 sha384_base64 );
 use Fcntl qw( SEEK_SET );
 use Time::HiRes ();
 use Time::Piece;
 use JSON qw( decode_json encode_json );
+use Crypt::Eksblowfish::Bcrypt qw( bcrypt_hash bcrypt en_base64 de_base64 );
+use Crypt::Random qw( makerandom_octet );
 
 # Perl version
 use 5.32.1;
@@ -1267,6 +1269,46 @@ sub safeView {
 	sendOrigin( $realm );
 	preamble();
 }
+
+
+
+# User functionality
+
+
+
+# Generate a random hash salt
+sub genSalt {
+	return en_base64( makerandom_octet( ( Length => 12 ) );
+}
+
+# Hash password to storage safe format
+sub hashPassword {
+	my ( $password, $salt ) = @_;
+	
+	$salt ||= genSalt();
+	
+	my $hash = 
+	bcrypt_hash( {
+		key_nul	=> 1,
+		cost	=> 12, 
+		salt	=> $salt
+	}, sha384_base64( $password ) );
+	
+	return $salt . $hash;
+}
+
+# Check hashed password
+sub verifyPassword {
+	my ( $password, $stored ) = @_;
+	
+	my $salt	= substr( $stored, 0, 22 );
+	my $check	= substr( $stored, 22 );
+	
+	my $hash	= hashPassword( $password, $salt );
+	return ( bcrypt( $hash, $check ) eq $stored ) ? 1 : 0;
+}
+
+
 
 
 
