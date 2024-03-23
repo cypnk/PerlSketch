@@ -371,9 +371,9 @@ sub verifyDate {
 	my ( $year, $month, $day ) 
 	 	 	= $stamp =~ m{^(\d{4})/(\d{2})/(\d{2})$};
 	
-	$year	||= 0;
-	$month	||= 0;
-	$day	||= 0;
+	$year	//= 0;
+	$month	//= 0;
+	$day	//= 0;
 	
 	# Day range
 	if ( $day < 1 || $day > 31 ) {
@@ -547,8 +547,8 @@ sub preamble {
 sub sendOrigin {
 	my ( $realm, $root ) = @_;
  	
-  	$realm	||= $request{'realm'};
- 	$root	||= '/';
+  	$realm	//= $request{'realm'};
+ 	$root	//= '/';
 	
  	my $http = ( $request{'secure'} ) ? 'http://' : 'https://';
    	my $path = $http . $realm . $root;
@@ -666,8 +666,8 @@ sub sendOptions {
 	my ( $fail, $allow ) = @_;
 	
 	# Set fail to off by default
-	$fail	||= 0;
-	$allow	||= 'GET, POST, HEAD, OPTIONS';
+	$fail	//= 0;
+	$allow	//= 'GET, POST, HEAD, OPTIONS';
  
 	# Fail mode?, send 405 HTTP status code, default 200 OK
 	httpCode( $fail ? '405' : '200' );
@@ -1155,7 +1155,7 @@ sub sessionID {
 	my ( $sent ) = @_;
 	state $id = '';
 	
-	$sent ||= '';
+	$sent //= '';
 	if ( $sent ne '' ) {
 		$id = ( $sent =~ /^([a-zA-Z0-9]{20,255})$/ ); 
 	}
@@ -1224,7 +1224,7 @@ sub sessionStart {
 	}
 	
 	# Get raw ID from cookie
-	$id	||= getCookieData( 'session' );
+	$id	//= getCookieData( 'session' );
 	
 	# Clean ID
 	$id	= pacify( $id );
@@ -1359,7 +1359,7 @@ sub genSalt {
 sub hashPassword {
 	my ( $password, $salt ) = @_;
 	
-	$salt ||= genSalt();
+	$salt //= genSalt();
 	
 	my $hash = 
 	bcrypt_hash( {
@@ -1822,7 +1822,8 @@ The following is a set of settings used by PerlSketch to serve content.
 MIME Data consists of a file extension, a MIME type (to send to the browser),
 and a set of file signatures or "magic numbers", which are the first few bytes 
 of a file which give an indication of what type of file this is. This method is 
-used as a quick way to detect file types without having to open the entire file.
+used as a quick way to detect file types without having to reading the entire 
+file.
 
 Files without signatures are treated as text types. E.G. css, js, html etc...
 
@@ -1895,15 +1896,15 @@ tar	application/x-tar		\x75\x73\x74\x61\x72\x00\x30\x30  \x75\x73\x74\x61\x72\x2
 
 
 
-The following are a set of HTTP response codes sent to the user before the any 
+The following are a set of HTTP response codes sent to the user before any 
 other headers, including the preamble and content types. This response is 
 required for the script to function correctly when serving web pages.
 
 The most common type should be 200 OK to indicate the request has succeeded.
-Next is likely 404 Not Found to indicate a particular resource hasn't been 
+Next likely is 404 Not Found to indicate a particular resource hasn't been 
 located at the address used by the visitor.
 
-Some responses have been ommitted as they should be handled at the web server 
+Some responses have been omitted as they should be handled at the web server 
 level instead of at the Perl script, and/or they're unsuitable to implement 
 here.
 
