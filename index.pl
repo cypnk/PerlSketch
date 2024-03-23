@@ -363,6 +363,85 @@ sub dateRfc {
  	return $t->strftime();
 }
 
+# Limit the date given to a maximum value of today
+sub verifyDate {
+	my ( $stamp ) = @_;
+	
+	# Split stamp to components
+	my ( $year, $month, $day ) 
+	 	 	= $stamp =~ m{^(\d{4})/(\d{2})/(\d{2})$};
+	
+	$year	||= 0;
+	$month	||= 0;
+	$day	||= 0;
+	
+	# Day range
+	if ( $day < 1 || $day > 31 ) {
+		return 0;
+	}
+	
+	# Month range
+	if ( $month < 1 || $month > 12 ) {
+		return 0;
+	}
+	
+	# Year minimum
+	if ( $year < 1900 ) {
+		return 0;
+	}
+	
+	# Prevent exceeding current date
+	
+	# Current date
+ 	my $now 	= localtime->strftime('%Y-%m-%d');
+	my ( $year_, $month_, $day_ ) 
+			= $now =~ m{^(\d{4})-(\d{2})-(\d{2})$};
+	
+	# Given year greater than current year?
+	if ( $year > $year_ ) {
+		return 0;
+	
+	# This year given?
+	} elsif ( $year == $year_ ) {
+		
+		# Greater than current month?
+		if ( $month > $month_ ) {
+			return 0;
+			
+		# Greater than current day?
+		} elsif ( $month == $month_ && $day > $day_ ) {
+			return 0;
+		}
+	}
+	
+	# Leap year?
+	my $is_leap = (
+		( $year % 4 == 0 && $year % 100 != 0 ) || 
+		( $year % 400 == 0 ) 
+	) ? 1 : 0;
+	
+	# Days in February, adjusting for leap years
+	my @dm 	 	= ( 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 );
+	if ( $month == 2 && $is_leap ) {
+		$dm[1]	= 29 
+	}
+	
+	# Maximum day for given month
+	my $m_day	= $dm[$month - 1];
+	
+  	if ( $day > $m_day ) {
+		return 0;
+	}
+	
+	return 1;
+}
+
+
+
+# Response
+
+
+
 # Set expires header
 sub setCacheExp {
 	my ( $ttl ) = @_;
@@ -393,13 +472,6 @@ sub genFileHeaders {
 	print "Last-Modified: $lmod\n";
 	print "ETag: $etag\n";
 }
-
-
-
-# Response
-
-
-
 
 # Send HTTP status code
 sub httpCode {
@@ -601,7 +673,9 @@ sub sendOptions {
 	httpCode( $fail ? '405' : '200' );
 	print $fail ? 
  		"Allow: $allow\n" : 
- 		"Access-Control-Allow-Methods: $allow\n";
+ 		"Access-Control-Allow-Methods: $allow\n" . 
+   		"Access-Control-Allow-Headers: Accept, Accept-Language, Content-Type\n" . 
+     		"Access-Control-Expose-Headers: Content-Type, Cache-Control, Expires\n";
 	exit;
 }
 
