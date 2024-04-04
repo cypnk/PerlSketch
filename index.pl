@@ -438,7 +438,9 @@ sub verifyDate {
 
 
 
+
 # Response
+
 
 
 
@@ -603,6 +605,8 @@ sub requestRanges {
 		bytes\s*=\s*				# Byte range heading
 		(?<ranges>(?:\d+-\d+(?:,\s*\d+-\d+)*))	# Comma delimeted ranges
 	/x;
+	
+	# Check range header
 	while ( $fr =~ m/$pattern/g ) {
 		
 		my $capture = $+{ranges};
@@ -788,9 +792,6 @@ sub streamRanged {
 		sendRangeError();
 	}
 	
-	# Generate content boundary
-	my $bound	= sha1_hex( $rs . $type );
-	
 	httpCode( 206 );
 	
 	# End here if this is a file range check only
@@ -799,6 +800,9 @@ sub streamRanged {
 	}
 	
 	preamble( 1, 1 );
+	
+	# Generate content boundary
+	my $bound	= sha1_hex( $rs . $type );
 	
 	print "Accept-Ranges: bytes\n";
 	print "Content-Type: multipart/byteranges; boundary=$bound\n";
@@ -910,7 +914,7 @@ sub sendResource {
 	my $text = exists( $mime_list{$ext}{sig} ) ? 0 : 1;
 	
 	httpCode( '200' );
-	if ( !$text ) 
+	if ( !$text ) {
 		# Allow ranges for non-text types
 		print "Accept-Ranges: bytes\n";
 	}
@@ -921,6 +925,7 @@ sub sendResource {
 	}
 	
 	genFileHeaders( $rs );
+	
 	preamble( 1, 1 );
 	
 	# Send the file content type header
@@ -1072,13 +1077,13 @@ END {
 
 # Get all cookie data from request
 sub getCookies {
-	state @items	= split( /;/, $ENV{'HTTP_COOKIE'} //= '' );
 	state %sent;
 	
 	if ( keys %sent ) {
 		return %sent;
 	}
 	
+	my @items	= split( /;/, $ENV{'HTTP_COOKIE'} //= '' );
 	foreach ( @items ) {
 		my ( $k, $v )	= split( /=/, $_ );
 		
@@ -1090,6 +1095,7 @@ sub getCookies {
 	return %sent;
 }
 
+# Get specific cookie key value, if it exists
 sub getCookieData {
 	my ( $key ) = @_;
 	my %cookies = getCookies();
@@ -1426,7 +1432,6 @@ sub viewHome {
 		$stime = time();
 		sessionWrite( 'start', $stime );
 	}
-	preamble();
 	
 	my %data = (
 		title	=> 'Your Homepage',
@@ -1435,6 +1440,7 @@ sub viewHome {
 			$cval
 	);
 	
+	preamble();
 	render( $tpl, \%data );
 	exit;
 }
@@ -1457,9 +1463,7 @@ sub viewArea {
 		# Nothing else to send
 		exit;
 	}
-
-	preamble();
- 
+	
 	my %data = (
 		title	=> $label,
 		body	=> 
@@ -1467,6 +1471,8 @@ sub viewArea {
 			"<strong>$verb</strong> on <em>$realm</em></p>" . 
 			 "<p>Page $page</p>"
 	);
+	
+	preamble();
 	
 	render( storage( "sites/$realm/index.html" ), \%data );
 	exit;
@@ -1490,8 +1496,6 @@ sub viewTags {
 		# Nothing else to send
 		exit;
 	}
- 	
-	preamble();
 	
 	my %data = (
 		title	=> $tags,
@@ -1500,7 +1504,9 @@ sub viewTags {
 			"<strong>$verb</strong> on <em>$realm</em></p>" . 
 			 "<p>Page $page</p>"
 	);
- 	
+	
+	preamble();
+	
 	render( storage( "sites/$realm/index.html" ), \%data );
 	exit;
 }
@@ -1542,7 +1548,7 @@ sub viewCreatePost {
 	my $tpl = storage( "sites/$realm/newpost.html" );
 	
 	if ( ! -f $tpl ) {
-		sendNotFound( $realm, $verb )
+		sendNotFound( $realm, $verb );
 	}
 	
 	my $year	= $params->{year}	//= 0;
@@ -1561,6 +1567,8 @@ sub viewCreatePost {
 		
 		form_title	=> 'New post'
 	);
+	
+	preamble();
 	
 	render( $tpl, \%data );
 	exit;
@@ -1597,6 +1605,9 @@ sub viewEditPost {
 		
 		form_title	=> 'Edit post'
 	);
+	
+	preamble();
+	
 	render( storage( "sites/$realm/editpost.html" ), \%data );
 	exit;
 }
