@@ -31,33 +31,36 @@ use 5.32.1;
 
 
 
-# Writable content location
-use constant STORAGE_DIR	=> "storage";
+# Default settings
+use constant {
+	
+	# Writable content location
+	STORAGE_DIR		=> "storage",
+	
+	# Maximum number of posts per page
+	POST_LIMIT		=> 10,
 
-# Maximum number of posts per page
-use constant POST_LIMIT		=> 10;
-
-# File stream buffer size
-use constant BUFFER_SIZE	=> 10240;
-
-
-# Cookie defaults
-
-# Base expiration
-use constant COOKIE_EXP		=> 604800;
-
-# Base domain path
-use constant COOKIE_PATH	=> '/';
-
-
-
-# Session defaults
-
-# Time before session cookie expires
-use constant SESSION_LIFETIME	=> 1800;
-
-# Time between cleaning up old cookies
-use constant SESSION_GC		=> 3600;
+	# File stream buffer size
+	BUFFER_SIZE		=> 10240,
+	
+	
+	# Cookie defaults
+	
+	# Base expiration
+	COOKIE_EXP		=> 604800,
+	
+	# Base domain path
+	COOKIE_PATH		=> '/',
+	
+	
+	# Session defaults
+	
+	# Time before session cookie expires
+	SESSION_LIFETIME	=> 1800,
+	
+	# Time between cleaning up old cookies
+	SESSION_GC		=> 3600
+};
 
 
 # Request methods and path handler map
@@ -259,6 +262,14 @@ sub utfDecode {
 	
 	chomp( $term );
 	return $term;
+}
+
+# Length of given string
+sub strsize {
+	my ( $str ) = @_;
+	
+	$str = pacify( $str );
+	return length( Encode::encode( 'UTF-8', $str ) );
 }
 
 
@@ -1358,14 +1369,17 @@ sub safeView {
 
 # Generate a random hash salt
 sub genSalt {
-	return en_base64( makerandom_octet( ( Length => 16 ) );
+	my ( $len ) = @_;
+	$len //= 16;
+	
+	return en_base64( makerandom_octet( ( Length => $len ) );
 }
 
 # Hash password to storage safe format
 sub hashPassword {
 	my ( $password, $salt ) = @_;
 	
-	$salt //= genSalt();
+	$salt //= genSalt( 16 );
 	
 	my $hash = 
 	bcrypt_hash( {
@@ -1388,7 +1402,49 @@ sub verifyPassword {
 	return ( bcrypt( $hash, $check ) eq $stored ) ? 1 : 0;
 }
 
+# Find form-specific anti-CSRF token
+sub getCSRFToken {
+	my ( $form )	= @_;
+	return sessionGet( 'csrf_' . $form );
+}
 
+# Generate an anti-CSRF token
+sub setCSRFToken {
+	my ( $form )	= @_;
+	
+	my $nonce	= genSalt( 32 );
+	my $key		= genSalt( 6 );
+	sessionWrite( 'csrf_' . $form, $key );
+	
+	my %data	= (
+		nonce => $nonce,
+		token => sha1_base64( $key . $nonce )
+	);
+	
+	return \%data;
+}
+
+# Verify anti-cross-site request forgery token
+sub validateCSRFToken {
+	my ( $token, $nonce, $form ) = @_;
+	
+	my $ln = strsize( $nonce );
+	my $lt = strsize( $token );
+	
+	# Sanity check
+	if ( 
+		$ln > 100 || 
+		$ln <= 10 || 
+		$lt > 350 || 
+		$lt <= 10
+	) {
+		return 0;
+	}
+	
+	my $key = getCSRFToken( $form );
+	
+	return ( $token eq sha1_base64( $key . $nonce ) ) ? 1 : 0;
+}
 
 
 
