@@ -607,17 +607,25 @@ sub requestHeaders {
 
 # Sent binary data
 sub formData {
-	state %data;
+	state %data	= ();
 	
 	if ( keys %data ) {
 		return %data;
 	}
 	
-	my %fields;
-	my @uploads;
-	
 	my %request_headers	= requestHeaders();
 	my $ctype		= $request_headers{'content-type'} // '';
+	
+ 	# Check multipart boundary
+	my $boundary;
+	if ( $ctype =~ /boundary=(.+)$/ ) {
+		$boundary = $1;
+	} else {
+		return %data;
+	}
+	
+	my %fields	= ();
+	my @uploads	= [];
 	
 	my $pattern		= 
 	qr/
@@ -626,9 +634,12 @@ sub formData {
 	/ix;
 	
 	my $sent	= do { local $/; <STDIN> };
-	my @parts	= split( /--\Q$boundary\E/, $sent );
+	my @segs	= split( /--\Q$boundary\E/, $sent );
 	
-	foreach my $part ( @parts ) {
+	shift @segs;
+	pop @segs;
+	
+	foreach my $part ( @segs ) {
 		# Break by new lines
 		my ( $headers, $content ) = split( /\r?\n\r?\n/, $part, 2 );
 		
@@ -639,7 +650,7 @@ sub formData {
 			$parts{lc( $key )} = $value;
 		}
 		
-		if ( $parts{'content-disposition'} ~= /$pattern/ ) {
+		if ( $parts{'content-disposition'} =~ /$pattern/ ) {
 			my $name	= $1;
 			my $fname	= $2;
 			my $ptype	= 
@@ -662,23 +673,22 @@ sub formData {
 				next;
 			}
 			
-			$fields{$name} = $content;	
+			$fields{$name} = $content;
 		}
 	}
-	$data{'fields'}	= $fields;
+	
+	$data{'fields'} = %fields;
 	$data{'files'}	= @uploads;
 	
 	return %data;
 }
-
 # Current host or server name/domain/ip address
 sub siteRealm {
-	my $realm = lc( $ENV{SERVER_NAME} //= '' ) =~ s/[^a-zA-Z0-9\.]//gr;
-	
-	$realm = pacify( $realm );
+	my $realm = lc( $ENV{SERVER_NAME} // '' ) =~ s/[^a-zA-Z0-9\.]//gr;
 	
 	# Check for reqested realm, if it exists, and end early if invalid
 	my $dir = storage( "sites/$realm" );
+	
 	if ( $realm eq '' || ! -d $dir ) {
 		sendBadRequest();
 	}
@@ -748,7 +758,7 @@ sub requestRanges {
 # Guess if current request is secure
 sub isSecure {
 	# Request protocol scheme HTTP/HTTPS etc..
-	my $scheme	= lc( $ENV{REQUEST_SCHEME} //= 'http' );
+	my $scheme	= lc( $ENV{REQUEST_SCHEME} // 'http' );
 	
 	# Forwarded protocol, if set
 	my $frd		= 
@@ -1503,6 +1513,7 @@ sub setCSRFToken {
 	
 	my $nonce	= genSalt( 32 );
 	my $key		= genSalt( 6 );
+	
 	sessionWrite( 'csrf_' . $form, $key );
 	
 	my %data	= (
@@ -1510,7 +1521,7 @@ sub setCSRFToken {
 		token => sha1_base64( $key . $nonce )
 	);
 	
-	return \%data;
+	return %data;
 }
 
 # Verify anti-cross-site request forgery token
