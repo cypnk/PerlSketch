@@ -15,7 +15,9 @@ use utf8;
 
 # Modules in use
 use Template;
+use MIME::Base64;
 use File::Basename;
+use File::Temp qw( tempfile tempdir );
 use Encode;
 use DBI;
 use Digest::SHA qw( sha1_hex sha1_base64 sha384_base64 );
@@ -581,6 +583,93 @@ sub redirect {
 # Request 
 
 
+
+
+# Raw request headers
+sub requestHeaders {
+	state %headers	= ();
+	if ( keys %headers ) {
+		return %headers;
+	}
+	
+	while ( my $line = <STDIN> ) {
+		chomp $line;
+		
+		# Until first empty line
+		last if $line eq '';
+		
+		my ( $key, $value ) = split( /:\s*/, $line, 2 );
+		$headers{lc($key)} = $value;
+	}
+	
+	return %headers;
+}
+
+# Sent binary data
+sub formData {
+	state %data;
+	
+	if ( keys %data ) {
+		return %data;
+	}
+	
+	my %fields;
+	my @uploads;
+	
+	my %request_headers	= requestHeaders();
+	my $ctype		= $request_headers{'content-type'} // '';
+	
+	my $pattern		= 
+	qr/
+		form-data;\s?					# Marker
+		name="([^"]+)"(?:;\s?filename="([^"]+)")?	# Labeled names
+	/ix;
+	
+	my $sent	= do { local $/; <STDIN> };
+	my @parts	= split( /--\Q$boundary\E/, $sent );
+	
+	foreach my $part ( @parts ) {
+		# Break by new lines
+		my ( $headers, $content ) = split( /\r?\n\r?\n/, $part, 2 );
+		
+		# Parse headers
+		my %parts;
+		foreach my $line ( split( /\r?\n/, $headers ) ) {
+			my ( $key, $value ) = split( /:\s*/, $line, 2 );
+			$parts{lc( $key )} = $value;
+		}
+		
+		if ( $parts{'content-disposition'} ~= /$pattern/ ) {
+			my $name	= $1;
+			my $fname	= $2;
+			my $ptype	= 
+				$parts{'content-type'} // 
+				'application/octet-stream';
+			
+			# Intercept upload
+			if ( defined $fname ) {
+				my ( $tfh, $tname ) = tempfile();
+				print $tfh $content;
+				close $tfh;
+				
+				push( @uploads, {
+					name		=> $name,
+					filename	=> $fname,
+					path		=> $tname,
+					content_type	=> $ptype
+				} );
+				
+				next;
+			}
+			
+			$fields{$name} = $content;	
+		}
+	}
+	$data{'fields'}	= $fields;
+	$data{'files'}	= @uploads;
+	
+	return %data;
+}
 
 # Current host or server name/domain/ip address
 sub siteRealm {
