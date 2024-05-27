@@ -1548,6 +1548,295 @@ sub validateCSRFToken {
 
 
 
+# Templates and rendering
+
+
+
+# Template placeholder replacements
+sub replace {
+	my ( $tpl, %data, $clean ) = @_;
+	
+	while ( my ( $term, $html ) = each %data ) {
+		$tpl =~ s/\{$term\}/$html/ge;
+	}
+	
+	$clean = $clean // 1;
+	
+	# Remove any unset placeholders
+	if ( $clean == 1 ) {
+		$tpl =~ s/\{.*\}//g;
+	}
+	
+	return $tpl;
+}
+
+# Load and find rendering templates by label
+sub template {
+	my ( $label ) = @_;
+	
+	state %tpl_list = ();
+	
+	if ( keys %tpl_list ) {
+		return $tpl_list{$label} //= '';
+	}
+	
+	my $data	= getRawData();
+	my $pattern	= qr/
+	\s*(?<tpl>tpl_[\w_]+):\s*	# Template name E.G. tpl_page
+		(?<html>.*?)		# HTML Content
+	\s*end_tpl			# Template delimeter suffix
+	/ixs;
+	
+	# Load templates list
+	while ( $data =~ /$pattern/g ) {
+		$tpl_list{$+{tpl}} = $+{html};
+	}
+	return $tpl_list{$label} //= '';
+}
+
+# TODO: Process footnotes
+sub footnote {
+	my ( $ref, $note ) = @_;
+	
+	return '';
+}
+
+# TODO: Process uploaded media embeds
+sub embeds {
+	my ( $ref, $source, $title, $caption, $preview  ) = @_;
+	for ( $ref ) {
+		/audio/ and do {
+			return 'audio';
+		};
+		
+		/video/ and do {
+			return 'video';
+		};
+		
+		/figure/ and do {
+			return 'figure';
+		};
+	}
+	
+	# Some matching went wrong
+	return '';
+}
+
+# Third-party hosted media embedding
+sub hostedEmbeds {
+	my ( $host, $url ) = @_;
+	
+	my %data;
+	my @pats;
+	
+	for ( $host ) {
+		/youtube/ and do {
+			@pats = (
+				qr/http(s)?\:\/\/(www)?\.?youtube\.com\/watch\?v=
+					(?<src>[0-9a-z_\-]*)
+					(?:\&t\=(?<time>[\d]*)s)?/is,
+				qr/http(s)?\:\/\/(www)?\.?youtu\.be\/
+					(?<src>[0-9a-z_\-]*)
+					(?:\?t\=(?<time>[\d]*))?/is,
+				qr/(?<src>[0-9a-z_\-]*)/is
+			);
+			
+			# Try to find a matching YouTube URL
+			foreach my $rx ( @pats ) {
+				if ( $url =~ $rx ) {
+					return replace( template( 'tpl_youtube' ), %+ );
+				}
+			}
+			
+			# Or just return the URL as-is
+			return '[youtube ' . $url . ']';
+		};
+		
+		/vimeo/ and do {
+			@pats = (
+				qr/http(s)?\:\/\/(www)?\.?vimeo\.com\/(?<src>[0-9]*)/is,
+				qr/(?<src>[0-9]*)/is
+			);
+			
+			foreach my $rx ( @pats ) {
+				if ( $url =~ $rx ) {
+					return replace( template( 'tpl_vimeo' ), %+ );
+				}
+			}
+			
+			return '[vimeo ' . $url . ']';
+		};
+		
+		/peertube/ and do {
+			if ( $url =~ qr/http(s)?\:\/\/(?<src_host>.*?)\/videos\/watch\/
+					(?<src>[0-9\-a-z_]*)\]/is ) {
+				return replace( template( 'tpl_peertube' ), %+ );
+			}
+		};
+		
+		/archive/ and do {
+			@pats = (
+				qr/http(s)?\:\/\/(www)?\.?archive\.org\/details\/
+					(?<src>[0-9\-a-z_\/\.]*)\]/is,
+				qr/(?<src>[0-9a-z_\/\.]*)\]/is
+			);
+			
+			foreach my $rx ( @pats ) {
+				if ( $url =~ $rx ) {
+					return replace( template( 'tpl_archiveorg' ), %+ );
+				}
+			}
+		};
+		
+		/lbry|odysee/ and do {
+			@pats = (
+				qr/http(s)?\:\/\/(?<src_host>.*?)\/\$\/download\/
+					(?<slug>[\pL\pN\-_]*)\/\-?
+					(?<src>[0-9a-z_]*)\]/is,
+				qr/lbry\:\/\/\@(?<src_host>.*?)\/([\pL\pN\-_]*)
+					(?<slug>\#[\pL\pN\-_]*)?(\s|\/)
+					(?<src>[\pL\pN\-_]*)\]/is
+			);
+			
+			foreach my $rx ( @pats ) {
+				return replace( template( 'tpl_lbry' ), %+ );
+			}
+		};
+		
+		/utreon|playeur/ and do {
+			if ( $url =~ qr/(?:http(s)?\:\/\/(www\.)?)?
+					(?:utreon|playeur)\.com\/v\/
+					(?<src>[0-9a-z_\-]*)
+				(?:\?t\=(?<time>[\d]{1,}))?\]/is 
+			) {
+				return replace( template( 'tpl_playeur' ), %+ );
+			}
+		};
+	}
+	
+	# Nothing else found
+	return '';
+}
+
+# Simple subset of Markdown formatting with embedded media extraction
+sub markdown {
+	my ( $data ) = @_;
+	
+	state %patterns = (
+		# Links, Images
+		qr/(?<img>\!)?						# Image if present
+			\[(?<text>[^\]]+)\]				# Main text
+			(?:\(
+				(?:\"(?<title>([^\"]|\\\")+)\")?	# Alt or title
+				(?<dest>.*?)\)				# Destination URL
+			)
+		/ixs
+		=> sub {
+			my $text	= $+{text};
+			my $dest	= $+{dest};
+			my $img		= $+{img}	// '';
+			my $title	= $+{title}	// '';
+			
+			# Image?
+			if ( $img ne '' ) {
+				if ( $title ne '' ) {
+					return '<img src="' . $dest . 
+						' title="' . $title . '">';
+				}
+				return '<img src="' . $dest . '">';
+			}
+			
+			# Link with title?
+			if ( $title ne '' ) {
+				return '<a href="'. $dest . '" title="' . 
+					$title . '">' . $text . '</a>';
+			}
+			
+			# Plain link
+			return '<a href="'. $dest . '">' . $text . '</a>';
+		},
+		
+		# Bold, Italic, Delete, Quote
+		'(\*(\*+)?|\~\~|\:\")(.*?)\1'
+		=> sub {
+			for ( $1 ) {
+				/\~/ and do { return '<del>' . $1 . '</del>'; };
+				/\:/ and do { return '<q>' . $1 . '</q>'; };
+			}
+			
+			my $i = strsize( $1 );
+			for ( $i ) {
+				( $i == 2 ) and do { return '<strong>' . $3 . '</strong>'; };
+				( $i == 3 ) and do { return '<strong><em>' . $3 . '</em></strong>'; };
+			}
+			return '<em>' . $3 . '</em>';
+		},
+		
+		# Headings
+		'\n([#=]{1,6})\s?(.*?)\s?\1?\n'
+		=> sub {
+			my $i = strsize( $1 );
+			return "<h$i>$2</h$i>";
+		},
+		
+		# Horizontal rule
+		'\n(\-|_|\+){5,}\n'
+		=> sub {
+			return '<hr />';
+		},
+		
+		# References, Media, Embeds etc...
+		qr/
+			\[
+				(?<ref>[^\]\[\"\s]+)			# Reference or embed marker
+				(?:\"(?<title>([^\"]|\\\")+)\")?	# Alt or title
+				(?:\[(?<caption>.*?)\] )? 		# Caption(s), if present
+				(?:\((?<preview>.*?)\) )?		# Preview image, if present
+				(?<source>.*?)				# Source URL or note
+			\]
+		/ixs
+		=> sub {
+			my $ref		= $+{ref};
+			my $source	= $+{source}	// '';
+			
+			my $title	= $+{title}	// '';
+			my $caption	= $+{caption}	// '';
+			my $preview	= $+{preview}	// '';
+			
+			chomp( $ref );
+			for ( $ref ) {
+				# TODO: Process footnotes
+				/ref|footnote/ and do { 
+					return 'footnote'; 
+				};
+				
+				# Uploaded media embedding
+				/audio|video|figure/ and do {
+					return embeds( $ref, $source, $title, $caption, $preview );
+				};
+				
+				# Third-party hosted media embedding
+				/youtube|vimeo|archive|peertube|lbry|odysee|utreon|playeur/ and do {
+					return hostedEmbeds( $ref, $source );
+				};
+			}
+			
+			return '';
+		},
+		
+	);
+	
+	# Replace placeholders with formatted HTML
+	foreach my $match ( keys %patterns ) {
+		my $html = $patterns{$match};
+		$data =~ s/$match/$html->()/ge;
+	}
+	
+	return $data;
+}
+
+
+
 
 # Site views ( Also exit after completing their tasks )
 
@@ -2464,6 +2753,153 @@ BEGIN
 END;-- --
 
 -- End database --
+
+
+
+
+The following are a set of reusable HTML templates for rendering content. 
+The convention for template is "tpl_label:" followed by "end_tpl", without 
+quotes, where "label" is the unique identifier. Add and extend as needed.
+
+
+Basic page:
+
+tpl_page:
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>{title}</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>{body}</body>
+</html>
+end_tpl
+
+
+
+The following are mbedded media templates for use with uploaded files.
+
+Embedded video with preview:
+
+tpl_audio_embed:
+<div class="media"><audio src="{src}" preload="none" controls></audio></div>
+end_tpl
+
+
+Embedded video without preview:
+
+tpl_video_np_embed:
+<div class="media">
+	<video width="560" height="315" src="{src}" preload="none" 
+		controls>{detail}</video>
+</div>
+end_tpl
+
+
+Embedded video with preview:
+
+tpl_video_embed:
+<div class="media">
+	<video width="560" height="315" src="{src}" preload="none" 
+		poster="{preview}" controls>{detail}</video>
+</div>
+end_tpl
+
+
+Video caption track without language:
+
+tpl_cc_nl_embed:
+<track kind="subtitles" src="{src}" {default}>
+end_tpl
+
+
+Video caption with language
+tpl_cc_embed:
+<track label="{label}" kind="subtitles" srclang="{lang}" src="{src}" {default}>
+end_tpl
+
+
+
+The following are third-party hosted media templates
+
+
+
+YouTube video wrapper:
+
+tpl_youtube:
+<div class="media">
+	<iframe width="560" height="315" frameborder="0" 
+		sandbox="allow-same-origin allow-scripts" 
+		src="https://www.youtube.com/embed/{src}?start={time}" 
+		allow="encrypted-media;picture-in-picture" 
+		loading="lazy" allowfullscreen></iframe>
+</div>
+end_tpl
+
+
+Vimeo video wrapper:
+
+tpl_vimeo:
+<div class="media">
+	<iframe width="560" height="315" frameborder="0" 
+		sandbox="allow-same-origin allow-scripts" 
+		src="https://player.vimeo.com/video/{src}" 
+		allow="picture-in-picture" loading="lazy" 
+		allowfullscreen></iframe>
+</div>
+end_tpl
+
+
+Peertube video wrapper (any instance):
+
+tpl_peertube:
+<div class="media">
+	<iframe width="560" height="315" frameborder="0" 
+		sandbox="allow-same-origin allow-scripts" 
+		src="https://{src_host}/videos/embed/{src}" 
+		allow="picture-in-picture" loading="lazy" 
+		allowfullscreen></iframe>
+</div>
+end_tpl
+
+
+Internet Archive media wrapper:
+
+tpl_archiveorg:
+<div class="media">
+	<iframe width="560" height="315" frameborder="0" 
+		sandbox="allow-same-origin allow-scripts" 
+		src="https://archive.org/embed/{src}" 
+		allow="picture-in-picture" loading="lazy" 
+		allowfullscreen></iframe></div>
+end_tpl
+
+
+LBRY/Odysee video wrapper:
+
+tpl_lbry:
+<div class="media">
+	<iframe width="560" height="315" frameborder="0" 
+		sandbox="allow-same-origin allow-scripts" 
+		src="https://{src_host}/$/embed/{slug}/{src}" 
+		allow="picture-in-picture" loading="lazy" 
+		allowfullscreen></iframe>
+</div>
+end_tpl
+
+
+Playeur/Utreon video wrapper:
+tpl_playeur:
+<div class="media">
+	<iframe width="560" height="315" frameborder="0" 
+		sandbox="allow-same-origin allow-scripts" 
+		allow="encrypted-media;picture-in-picture"
+		src="https://playeur.com/embed/{src}?t={time}" 
+		loading="lazy" allowfullscreen></iframe>
+</div>
+end_tpl
+
 
 
 
