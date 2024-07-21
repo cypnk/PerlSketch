@@ -249,6 +249,28 @@ sub pacify {
 	return $term;
 }
 
+# Convert all spaces to single character
+sub unifySpaces {
+	my ( $text, $rpl, $br ) = @_;
+ 	
+ 	$text	= pacify( $text );
+  	
+  	# Preserve line breaks?
+  	$br	//= 0;
+   	
+   	# Replacement space, defaults to ' '
+ 	$rpl	//= ' ';
+  	
+  	if ( $br ) {
+		$text	=~ s/[ \t\v\f]+/$rpl/;
+ 	} else {
+  		$text	=~ s/[[:space:]]+/$rpl/;
+  	}
+  	
+ 	chomp( $text );
+ 	return $text;
+}
+
 # Decode URL encoded strings
 sub utfDecode {
 	my ( $term ) = @_;
