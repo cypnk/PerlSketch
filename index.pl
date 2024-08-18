@@ -296,6 +296,23 @@ sub strsize {
 	return length( Encode::encode( 'UTF-8', $str ) );
 }
 
+# Text starts with
+sub textStartsWith {
+	my ( $text, $needle ) = @_;
+	my $nl	= length( $needle );
+	my $tl	= length( $text );
+	
+	if ( !$nl || !$tl ) {
+		return 0;
+	}
+	
+	if ( $nl > $tl ) {
+		return 0;
+	}
+	
+	return substr( $text, 0, $nl ) eq $needle;
+}
+
 
 # Helpers 
 
@@ -614,14 +631,24 @@ sub requestHeaders {
 		return %headers;
 	}
 	
-	while ( my $line = <STDIN> ) {
-		chomp $line;
+	my $f = '';
+	
+	for ( sort( keys ( %ENV ) ) ) {
+		$f = lc( $_ );
+		if ( 
+			!textStartsWith( $f, 'content_' )	&& 
+			!textStartsWith( $f, 'context_' )	&& 
+			!textStartsWith( $f, 'http_' )		&& 
+			!textStartsWith( $f, 'query_' )		&& 
+			!textStartsWith( $f, 'remote_' )	&&
+			!textStartsWith( $f, 'request_' )	&& 
+			!textStartsWith( $f, 'script_' )	&& 
+			!textStartsWith( $f, 'server_' )
+		) {
+			next;
+		}
 		
-		# Until first empty line
-		last if $line eq '';
-		
-		my ( $key, $value ) = split( /:\s*/, $line, 2 );
-		$headers{lc($key)} = $value;
+		$headers{$f} = $ENV{$_};
 	}
 	
 	return %headers;
@@ -636,7 +663,7 @@ sub formData {
 	}
 	
 	my %request_headers	= requestHeaders();
-	my $ctype		= $request_headers{'content-type'} // '';
+	my $ctype		= $request_headers{'content_type'} // '';
 	
  	# Check multipart boundary
 	my $boundary;
