@@ -627,28 +627,22 @@ sub redirect {
 # Raw request headers
 sub requestHeaders {
 	state %headers	= ();
+	
+	# Relevant header names
+	state @prefix	= 
+	qw/CONTENT CONTEXT HTTP QUERY REMOTE REQUEST SCRIPT SERVER/;
+	
 	if ( keys %headers ) {
 		return %headers;
 	}
 	
-	my $f = '';
-	
 	for ( sort( keys ( %ENV ) ) ) {
-		$f = lc( $_ );
-		if ( 
-			!textStartsWith( $f, 'content_' )	&& 
-			!textStartsWith( $f, 'context_' )	&& 
-			!textStartsWith( $f, 'http_' )		&& 
-			!textStartsWith( $f, 'query_' )		&& 
-			!textStartsWith( $f, 'remote_' )	&&
-			!textStartsWith( $f, 'request_' )	&& 
-			!textStartsWith( $f, 'script_' )	&& 
-			!textStartsWith( $f, 'server_' )
-		) {
-			next;
+		foreach my $p ( @prefix ) {
+			if ( $_ =~ /^\Q$p\E/ ) {
+				$headers{lc( $_ )} = $ENV{$_};
+				last;
+			}
 		}
-		
-		$headers{$f} = $ENV{$_};
 	}
 	
 	return %headers;
