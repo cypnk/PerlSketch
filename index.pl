@@ -14,19 +14,19 @@ use warnings;
 use utf8;
 
 # Modules in use
-use Template;
 use MIME::Base64;
 use File::Basename;
 use File::Temp qw( tempfile tempdir );
 use Encode;
-use DBI;
-use Digest::SHA qw( sha1_hex sha1_base64 sha384_base64 );
+use Digest::SHA qw( sha1_hex sha1_base64 sha384_hex sha384_base64 sha512_hex );
 use Fcntl qw( SEEK_SET );
 use Time::HiRes ();
 use Time::Piece;
 use JSON qw( decode_json encode_json );
-use Crypt::Eksblowfish::Bcrypt qw( bcrypt_hash bcrypt en_base64 de_base64 );
-use Crypt::Random qw( makerandom_octet );
+
+# Extra modules
+use Template;
+use DBI;
 
 # Perl version
 use 5.32.1;
@@ -35,7 +35,8 @@ use 5.32.1;
 
 # Default settings
 use constant {
-	
+	# Core defaults
+ 	
 	# Writable content location
 	STORAGE_DIR		=> "storage",
 	
@@ -44,6 +45,12 @@ use constant {
 
 	# File stream buffer size
 	BUFFER_SIZE		=> 10240,
+	
+	# Password hashing rounds
+	HASH_ROUNDS		=> 1000,
+	
+	# File lock attempts
+	LOCK_TRIES		=> 4,
 	
 	
 	# Cookie defaults
@@ -350,6 +357,37 @@ sub storage {
 	$path	=~ s/\.{2,}/\./g;
 	
 	return pacify( "$dir/$path" );
+}
+
+# File lock/unlock helper
+sub fileLock {
+	my ( $fname, $ltype ) = @_;
+	my $fl		= "$fname.lock___";
+	
+	# Default to removing lock
+	$ltype		//= 0;
+	
+	# Remove lock
+	if ( $ltype eq 0 ) {
+		# No lock
+		if ( ! -f $fl ) {
+			return 1;
+		}
+		unlink $fl;
+		return 1;
+	}
+	
+	my $tries	= LOCK_TRIES;
+	while ( not sysopen ( $fl, $fname, O_WRONLY | O_EXCL | O_CREAT ) ) {
+		if ( $tries == 0 ) {
+			return 0;
+		}
+		
+		$tries--;
+		sleep 0.1;
+	}
+	
+	return 1;
 }
 
 # Filter number within min and max range, inclusive
@@ -1509,39 +1547,50 @@ sub safeView {
 
 
 
-# Generate a random hash salt
+# Generate random salt up to given length
 sub genSalt {
 	my ( $len ) = @_;
-	$len //= 16;
+	state @pool	= ( '.', '/', 0..9, 'a'..'z', 'A'..'Z' );
 	
-	return en_base64( makerandom_octet( ( Length => $len ) );
+	return join( '', map( +@pool[rand( 64 )], 1..$len ) );
 }
 
-# Hash password to storage safe format
+# Generate a hash from given password and optional salt
 sub hashPassword {
-	my ( $password, $salt ) = @_;
+	my ( $pass, $salt, $csalt ) = @_;
 	
-	$salt //= genSalt( 16 );
+	# Generate new salt, if empty
+	$salt		//= genSalt( 16 );
 	
-	my $hash = 
-	bcrypt_hash( {
-		key_nul	=> 1,
-		cost	=> 12, 
-		salt	=> $salt
-	}, sha384_base64( $password ) );
+	# Crypt-friendly blocks
+	my @chunks	= 
+		split( /(?=(?:.{8})+\z)/s, sha512_hex( $salt . $pass ) );
 	
-	return $salt . $hash;
+	my $cr		= ''; # Crypt result
+	my $block	= ''; # Hash block
+	
+	for ( @chunks ) {
+		# Use chunk's last 2 chars as salt for crypt and hash 1000 times
+		$block = crypt( $_, substr( $_, 0, -2 ) );
+		for ( 1..HASH_ROUNDS ) {
+			$block = sha384_hex( $block );
+		}
+		
+		$cr		.= $block;
+	}
+	
+	return $salt . $cr;
 }
 
-# Check hashed password
+# Match raw password against stored hash
 sub verifyPassword {
-	my ( $password, $stored ) = @_;
+	my ( $pass, $stored ) = @_;
 	
-	my $salt	= substr( $stored, 0, 22 );
-	my $check	= substr( $stored, 22 );
+	if ( $stored eq hashPassword( $pass, substr( $stored, 0, 16 ) ) ) {
+		return 1;
+	}
 	
-	my $hash	= hashPassword( $password, $salt );
-	return ( bcrypt( $hash, $check ) eq $stored ) ? 1 : 0;
+	return 0;
 }
 
 # Find form-specific anti-CSRF token
