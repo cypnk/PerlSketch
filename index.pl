@@ -1824,6 +1824,111 @@ sub hostedEmbeds {
 	return '';
 }
 
+# HTML List formatting
+sub formatLists {
+	my ( $text ) = @_;
+	my @lines = split /\n/, $text;
+	my $html = '';
+	my @listed;  # Stack to manage nested lists
+
+	foreach my $line ( @lines ) {
+		# Match ordered list items
+		if ( $line =~ /^(\s*)(\d+\.)\s+(.*)$/ ) {
+			my $indent = length( $1 );
+			my $content = $3;
+			
+			# Close lists that are at the same or higher level of indentation
+			while ( 
+				@listed				&& 
+				$listed[-1]{indent} >= $indent	&& 
+				$listed[-1]{type} ne 'ol'
+			) {
+				$html .= '</ul>';
+				pop @listed;
+			}
+			
+			# Close unordered lists if changing to an ordered list
+			while (
+				@listed				&& 
+				$listed[-1]{type} eq 'ul'	&& 
+				$listed[-1]{indent} >= $indent
+			) {
+				$html .= '</ul>';
+				pop @listed;
+			}
+
+			# Start a new ordered list if needed
+			if (
+				!@listed			|| 
+				$listed[-1]{type} ne 'ol'	|| 
+				$listed[-1]{indent} != $indent
+			) {
+				$html .= '</ol>' if @listed && $listed[-1]{type} eq 'ol';
+				$html .= '<ol>';
+				push @listed, { type => 'ol', indent => $indent };
+			}
+
+			$html .= "<li>$content</li>\n";
+		
+		# Match unordered list items
+		} elsif ( $line =~ /^(\s*)[\*|\+]\s+(.*)$/ ) {
+			my $indent = length( $1 );
+			my $content = $2;
+
+			# Close lists that are at the same or higher level of indentation
+			while (
+				@listed				&& 
+				$listed[-1]{indent} >= $indent	&& 
+				$listed[-1]{type} ne 'ul'
+			) {
+				$html .= '</ol>';
+				pop @listed;
+			}
+
+			# Close ordered lists if changing to an unordered list
+			while (
+				@listed				&& 
+				$listed[-1]{type} eq 'ol'	&& 
+				$listed[-1]{indent} >= $indent
+			) {
+				$html .= '</ol>';
+				pop @listed;
+			}
+
+			# Start a new unordered list if needed
+			if (
+				!@listed			|| 
+				$listed[-1]{type} ne 'ul'	|| 
+				$listed[-1]{indent} != $indent
+			) {
+				$html .= '</ul>' if @listed && $listed[-1]{type} eq 'ul';
+				$html .= '<ul>';
+				push @listed, { type => 'ul', indent => $indent };
+			}
+
+			$html .= "<li>$content</li>\n";
+			
+		} else {
+			# Close any remaining open lists before adding non-list content
+			while ( @listed ) {
+				$html .= '</ul>' if $listed[-1]{type} eq 'ul';
+				$html .= '</ol>' if $listed[-1]{type} eq 'ol';
+				pop @listed;
+			}
+			$html .= "$line\n";
+		}
+	}
+
+	# Close any remaining open lists
+	while ( @listed ) {
+		$html .= '</ul>' if $listed[-1]{type} eq 'ul';
+		$html .= '</ol>' if $listed[-1]{type} eq 'ol';
+		pop @listed;
+	}
+
+	return $html;
+}
+
 # Simple subset of Markdown formatting with embedded media extraction
 sub markdown {
 	my ( $data ) = @_;
@@ -1891,6 +1996,18 @@ sub markdown {
 			return '<hr />';
 		},
 		
+		# Inline code
+		'\s`([^`]*)`\s' 
+		=> sub {
+			return "<code>$1<\/code>";
+		},
+		
+		# Multi-line code
+		'\n```(.*?)```\n?'
+		=> sub {
+			return "<pre><code>$1<\/code><\/pre>";
+		},
+		
 		# References, Media, Embeds etc...
 		qr/
 			\[
@@ -1938,6 +2055,9 @@ sub markdown {
 		$data =~ s/$match/$html->()/ge;
 	}
 	
+	# Format lists
+	$data = formatLists( $data );
+ 	
 	return $data;
 }
 
