@@ -219,24 +219,6 @@ our %sec_headers = (
 	'X-XSS-Protection'	=> "1; mode=block"
 );
 
-# Client request
-our %request	= (
-	# Server/website name
-	'realm'		=> siteRealm(),
-	
-	# Requested path
-	'url'		=> $ENV{REQUEST_URI}		//= '/',
-	
-	# Client request method
-	'verb'		=> lc( $ENV{REQUEST_METHOD}	//= '' ),
-	
-	# TLS connection status
-	'secure'	=> isSecure(),
-	
-	# Request query string
-	'query'		=> $ENV{QUERY_STRING}		//= ''
-);
-
 
 
 # Basic filtering
@@ -638,13 +620,14 @@ sub preamble {
 # Set the CORS origin to current URL
 sub sendOrigin {
 	my ( $realm, $root ) = @_;
- 	
-  	$realm	//= $request{'realm'};
- 	$root	//= '/';
+	my %request	= getRequest();
 	
- 	my $http = ( $request{'secure'} ) ? 'http://' : 'https://';
-   	my $path = $http . $realm . $root;
- 	print "Access-Control-Allow-Origin: $path\n";
+ 	$realm		//= $request{'realm'};
+	$root		//= '/';
+	
+	my $http = ( $request{'secure'} ) ? 'http://' : 'https://';
+	my $path = $http . $realm . $root;
+	print "Access-Control-Allow-Origin: $path\n";
 }
 
 # Redirect to another path
@@ -763,6 +746,7 @@ sub formData {
 	
 	return %data;
 }
+
 # Current host or server name/domain/ip address
 sub siteRealm {
 	my $realm = lc( $ENV{SERVER_NAME} // '' ) =~ s/[^a-zA-Z0-9\.]//gr;
@@ -775,6 +759,48 @@ sub siteRealm {
 	}
 	
 	return $realm;
+}
+
+# Guess if current request is secure
+sub isSecure {
+	# Request protocol scheme HTTP/HTTPS etc..
+	my $scheme	= lc( $ENV{REQUEST_SCHEME} // 'http' );
+	
+	# Forwarded protocol, if set
+	my $frd		= 
+		$ENV{HTTP_X_FORWARDED_PROTO}	//
+		$ENV{HTTP_X_FORWARDED_PROTOCOL}	//
+		$ENV{HTTP_X_URL_SCHEME}		// 'http';
+	
+	return ( $scheme eq 'https' || $frd  =~ /https/i ) ? 1 : 0;
+}
+
+# HTTP Client request
+sub getRequest {
+	
+	state %request;
+	if ( keys %request ) {
+		return %request;
+	}
+	
+	%request = (
+		# Server/website name
+		'realm'		=> siteRealm(),
+	
+		# Requested path
+		'url'		=> $ENV{REQUEST_URI}		//= '/',
+		
+		# Client request method
+		'verb'		=> lc( $ENV{REQUEST_METHOD}	//= '' ),
+		
+		# TLS connection status
+		'secure'	=> isSecure(),
+		
+		# Request query string
+		'query'		=> $ENV{QUERY_STRING}		//= ''
+	);
+	
+	return %request;
 }
 
 # Get requested file range, return range error if range was invalid
@@ -834,20 +860,6 @@ sub requestRanges {
 	
 	# Send filtered file ranges
 	return @ranges;
-}
-
-# Guess if current request is secure
-sub isSecure {
-	# Request protocol scheme HTTP/HTTPS etc..
-	my $scheme	= lc( $ENV{REQUEST_SCHEME} // 'http' );
-	
-	# Forwarded protocol, if set
-	my $frd		= 
-		$ENV{HTTP_X_FORWARDED_PROTO}	//
-		$ENV{HTTP_X_FORWARDED_PROTOCOL}	//
-		$ENV{HTTP_X_URL_SCHEME}		// 'http';
-	
-	return ( $scheme eq 'https' || $frd  =~ /https/i ) ? 1 : 0;
 }
 
 
@@ -1296,6 +1308,7 @@ sub getCookieData {
 
 # Set host/secure limiting prefix
 sub cookiePrefix {
+	my %request	= getRequest();
 	return 
 	( COOKIE_PATH eq '/' && $request{'secure'} ) ? 
 		'__Host-' : ( $request{'secure'} ? '__Secure-' : '' );
@@ -1305,6 +1318,7 @@ sub cookiePrefix {
 sub setCookie {
 	my ( $name, $value, $ttl ) = @_;
 	my $prefix	= cookiePrefix();
+	my %request	= getRequest();
 	
 	$ttl	//= COOKIE_EXP;
 	$ttl	= ( $ttl > 0 ) ? $ttl : ( ( $ttl == -1 ) ? 1 : 0 );
@@ -2323,6 +2337,7 @@ sub handleChangePass {
 
 # Startup
 sub begin() {
+	my %request	= getRequest();
 	my $verb 	= $request{'verb'};
 	
 	my $realm	= $request{'realm'};
