@@ -17,6 +17,7 @@ use utf8;
 use MIME::Base64;
 use File::Basename;
 use File::Temp qw( tempfile tempdir );
+use File::Spec qw( catfile );
 use Encode;
 use Digest::SHA qw( sha1_hex sha1_base64 sha384_hex sha384_base64 sha512_hex );
 use Fcntl qw( SEEK_SET );
@@ -332,13 +333,15 @@ sub storage {
 	# Remove leading spaces and trailing slashes, if any
 	( my $dir = STORAGE_DIR ) =~ s/^[\s]+|[\s\/]+$//g;
 	
+	$path	= pacify( $path );
+	
 	# Remove leading slashes and spaces, if any
 	$path	=~ s/^[\s\/]+//g;
 	
 	# Double dots
 	$path	=~ s/\.{2,}/\./g;
 	
-	return pacify( "$dir/$path" );
+	return catfile( $dir, $path );
 }
 
 # File lock/unlock helper
@@ -370,6 +373,100 @@ sub fileLock {
 	}
 	
 	return 1;
+}
+
+# Search path(s) for files by given pattern
+sub fileList {
+	my ( $dir, $fref, $pattern ) = @_;
+	unless ( -d $dir ) {
+		return undef;
+	}
+	
+	unless ( opendir( my $dh, $dir ) ) {
+		return undef;
+	}
+	
+	while ( my $entry = readdir( $dh ) ) {
+		if ( $entry eq '.' or $entry eq '..' ) {
+			next;
+		}
+		
+		my $path = catfile( $dir, $entry );
+		
+		if ( -d $path ) {
+			# Subfolder
+			fileList( $path, $fref, $pattern );
+		} else {
+			# File pattern match
+			if ( $entry =~ $pattern ) {
+				push( @fref, $path );
+			}
+		}
+	}
+	
+	closedir( $dh );
+}
+
+# Search directory for words
+sub searchFiles {
+	my ( $dir, $words, $ext, $page, $limit )	= @_;
+	
+	unless ( -d $dir ) {
+		return ();
+	}
+	
+	my $pattern	= join( '|', map { quotemeta } @$ext );
+	$pattern	= qr/\Q$pattern\E$/i;
+	
+	$limit		//= 10;
+	$page		//= 1;
+	
+	my $offset	= $limit * $page - 1;
+	
+	my @files;
+	fileList( $dir, \@files, $pattern );
+	
+	@files = sort( @files );
+	
+	my @items	= ();
+	my $count	= 0;
+	my $found	= 0;
+	
+	foreach my $fpath ( @files ) {
+		if ( @items >= $limit ) {
+			last;
+		}
+		
+		open ( my $fh, '<', $fpath ) or next;
+		
+		# Line-by line search
+		while ( my $line = <$fh> ) {
+			# Iterate through search terms
+			foreach my $word ( @$words ) {
+				if ( $line =~ /\b\Q$word\E\b/i) {
+					$found = 1;
+					last;
+				}
+			}
+			
+			# Skip rest of the lines
+			if ( $found ) {
+				last;
+			}
+		}
+		
+		close( $fh );
+		
+		if ( $found ) {
+			$count++;
+			if ( $count > $offset ) {
+				push( @items, $fpath );
+			}
+			$found	= 0;
+		}
+	}
+	
+	return @items;
 }
 
 # Filter number within min and max range, inclusive
