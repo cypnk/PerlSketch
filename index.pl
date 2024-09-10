@@ -17,10 +17,10 @@ use utf8;
 use MIME::Base64;
 use File::Basename;
 use File::Temp qw( tempfile tempdir );
-use File::Spec qw( catfile );
+use File::Spec::Functions qw( catfile );
 use Encode;
 use Digest::SHA qw( sha1_hex sha1_base64 sha384_hex sha384_base64 sha512_hex );
-use Fcntl qw( SEEK_SET );
+use Fcntl qw( SEEK_SET O_WRONLY O_EXCL O_RDWR O_CREAT );
 use Time::HiRes ();
 use Time::Piece;
 use JSON qw( decode_json encode_json );
@@ -382,7 +382,8 @@ sub fileList {
 		return undef;
 	}
 	
-	unless ( opendir( my $dh, $dir ) ) {
+	my $dh;
+	unless ( opendir( $dh, $dir ) ) {
 		return undef;
 	}
 	
@@ -395,11 +396,11 @@ sub fileList {
 		
 		if ( -d $path ) {
 			# Subfolder
-			fileList( $path, $fref, $pattern );
+			fileList( $path, @$fref, $pattern );
 		} else {
 			# File pattern match
 			if ( $entry =~ $pattern ) {
-				push( @fref, $path );
+				push( @$fref, $path );
 			}
 		}
 	}
