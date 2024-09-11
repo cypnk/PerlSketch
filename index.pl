@@ -1560,7 +1560,7 @@ sub sessionStart {
 	sessionID( $id );
 	
 	my $values = decode_json( "$data" );
-	foreach my $key ( %{$values} ) {
+	foreach my $key ( keys %{$values} ) {
 		sessionWrite( $key, $values->{$key} );
 	}
 }
