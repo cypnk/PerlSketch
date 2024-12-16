@@ -16,10 +16,11 @@ use utf8;
 # Modules in use
 use MIME::Base64;
 use File::Basename;
+use File::Copy;
 use File::Temp qw( tempfile tempdir );
-use File::Spec::Functions qw( catfile );
+use File::Spec::Functions qw( catfile canonpath file_name_is_absolute rel2abs );
 use Encode;
-use Digest::SHA qw( sha1_hex sha1_base64 sha384_hex sha384_base64 sha512_hex );
+use Digest::SHA qw( sha1_hex sha1_base64 sha256_hex sha384_hex sha384_base64 sha512_hex hmac_sha384 );
 use Fcntl qw( SEEK_SET O_WRONLY O_EXCL O_RDWR O_CREAT );
 use Time::HiRes ();
 use Time::Piece;
@@ -40,6 +41,9 @@ use constant {
  	
 	# Writable content location
 	STORAGE_DIR		=> "storage",
+	
+	# Uploaded file subfolder in storage
+	UPLOADS			=> "uploads",
 	
 	# Maximum number of posts per page
 	POST_LIMIT		=> 10,
@@ -226,56 +230,83 @@ our %sec_headers = (
 
 
 
+# Trim leading and trailing space 
+sub trim {
+	my ( $txt ) = @_;
+	$$txt	=~ s/^\s+|\s+$//g;
+}
+
 # Usable text content
 sub pacify {
 	my ( $term ) = @_;
-	
-	# Remove unprintable/invalid characters
-	$term	=~ s/[^[:print:]]//g;
-	$term	=~ s/[\x{fdd0}-\x{fdef}]//g;
-	$term	=~ s/[\p{Cs}\p{Cf}\p{Cn}]//g;
-	
-	chomp( $term );
+	$term	=~ s/
+		^\s*			# Remove leading spaces
+		| [^[:print:]]		# Unprintable characters
+		| [\x{fdd0}-\x{fdef}]	# Invalid Unicode ranges
+		| [\p{Cs}\p{Cf}\p{Cn}]	# Surrogate/unassigned code points
+		| \s*$			# Trailing spaces
+	//gx;
 	return $term;
 }
 
 # Convert all spaces to single character
 sub unifySpaces {
 	my ( $text, $rpl, $br ) = @_;
- 	
- 	$text	= pacify( $text );
-  	
-  	# Preserve line breaks?
-  	$br	//= 0;
-   	
-   	# Replacement space, defaults to ' '
- 	$rpl	//= ' ';
-  	
-  	if ( $br ) {
+	
+	return '' unless defined( $text ) && $text ne '';
+	
+	$text	= pacify( $text );
+	
+	$br	//= 0;		# Preserve line breaks?
+	$rpl	//= ' ';	# Replacement space, defaults to ' '
+	
+	if ( $br ) {
 		$text	=~ s/[ \t\v\f]+/$rpl/;
- 	} else {
-  		$text	=~ s/[[:space:]]+/$rpl/;
-  	}
-  	
- 	chomp( $text );
- 	return $text;
+	} else {
+		$text	=~ s/[[:space:]]+/$rpl/;
+	}
+	
+	trim( \$text );
+	return $text;
 }
 
 # Decode URL encoded strings
 sub utfDecode {
 	my ( $term ) = @_;
-	if ( $term eq '' ) {
-		return '';
-	}
+	return '' if !defined( $term ) || $term eq '';
 	
 	$term	= pacify( $term );
 	$term	=~ s/\.{2,}/\./g;
-	$term	=~ s/\+/ /;
-	$term	=~ s/\%([\w]{2})/chr(hex($1))/ge;
-	$term	= Encode::decode_utf8( $term );
+	$term	=~ s/\+/ /g;
+	$term	=~ s/\%([\da-fA-F]{2})/chr(hex($1))/ge;
 	
-	chomp( $term );
+	if ( Encode::is_utf8( $term ) ) {
+		$term	= Encode::decode_utf8( $term );
+	}
+	
+	trim( \$term );
 	return $term;
+}
+
+# Safely decode JSON to hash
+sub jsonDecode {
+	my ( $text )	= @_;
+	$text //= '';
+	
+	return {} if $text eq '';
+	
+	$text	= pacify( $text );
+	if ( !Encode::is_utf8( $text ) ) {
+		$text	= Encode::encode( 'UTF-8', $text );
+	}
+	
+	my $json;
+	eval {
+		$json	= decode_json( $text );
+	}
+	
+	return {} if ( $@ );
+	return $json;
 }
 
 # Length of given string
@@ -283,24 +314,72 @@ sub strsize {
 	my ( $str ) = @_;
 	
 	$str = pacify( $str );
-	return length( Encode::encode( 'UTF-8', $str ) );
+	if ( !Encode::is_utf8( $str ) ) {
+		$str = Encode::encode( 'UTF-8', $str );
+	}
+	return length( $str );
 }
 
-# Text starts with
+# Find if text starts with given search needle
 sub textStartsWith {
 	my ( $text, $needle ) = @_;
+	
+	$needle	//= '';
+	$text	//= '';
+	
 	my $nl	= length( $needle );
-	my $tl	= length( $text );
-	
-	if ( !$nl || !$tl ) {
-		return 0;
-	}
-	
-	if ( $nl > $tl ) {
-		return 0;
-	}
+	return 0 if $nl > length($text);
 	
 	return substr( $text, 0, $nl ) eq $needle;
+}
+
+# Hooks and extensions
+sub hook {
+	my ( $data )	= @_;
+	state	%handlers;
+	
+	# No event?
+	unless ( $data->{event} ) {
+		# Nothing to handle or register
+		return;
+	}
+	
+	# Hook event name
+	my $name	= $data->{event};
+	$name		= lc( unifySpaces( $name, '_' ) );
+	
+	# Register new handler?
+	if ( $data->{handler} ) {
+		# Safe handler name
+		my $handle	= unifySpaces( $data->{handler}, '' );
+		
+		# Check if subroutine exists
+		return unless defined( &{$handle} );
+		
+		# Initialize event
+		unless ( exists( $handlers{$name} ) ) {
+			$handlers{$name}	= [];
+		}
+		
+		push( @{$handlers{$name}}, $handle );
+		return;
+	}
+	
+	# Check event registry
+	return unless exists $handlers{$name};
+	
+	# Trigger event
+	for my $handler ( @{$handlers{$name}} ) {
+		
+		# Call with parameters if set
+		if ( exists( $data->{params} ) ) {
+			&{$handler}( %{$data->{params}} );
+			next;
+		}
+		
+		# Call without parameters
+		&{$handler}();
+	}
 }
 
 
@@ -326,52 +405,153 @@ sub render {
 	$tpl->process( $html, $params ) or exit 1;
 }
 
+# Convert to a valid file or directory path
+sub filterPath {
+	my ( $path, $ns ) = @_;
+	
+	# Define reserved characters
+	state @reserved	= qw( : * ? " < > | ; );
+	
+	# New filter characters?
+	if ( ref($ns) eq 'ARRAY' && @{$ns} ) {
+		# Merge with the reserved pool
+		push( @reserved, @{$ns} );
+		
+		# Remove duplicates
+		my %dup;
+		@reserved = grep { !$dup{$_}++ } @reserved;
+	}
+	
+	my $chars	= join( '', map { quotemeta( $_ ) } @reserved );
+	$path		=~ s/[$chars]//g;
+	$path		= unifySpaces( $path );
+	
+	# Convert relative path to absolute path if needed
+	if ( !file_name_is_absolute( $path ) && $path =~ /\S/ ) {
+		$path = rel2abs( $path );
+	}
+	
+	# Canonical filter
+	return canonpath( $path );
+}
+
+sub filterFileName {
+	my ( $fname, $ns ) = @_;
+	state @reserved = 
+	qw(
+		CON PRN AUX NUL COM1 COM2 COM3 COM4 COM5 COM6 COM7 COM8 COM9 \
+		LPT1 LPT2 LPT3 LPT4 LPT5 LPT6 LPT7 LPT8 LPT9
+	);
+	
+	# Append to reserved list?
+	if ( ref($ns) eq 'ARRAY' && @{$ns} ) {
+		push( @reserved, @{$ns} );
+		
+		my %dup;
+		@reserved = grep { !$dup{$_}++ } @reserved;
+	}
+	
+	# Basic filtering
+	$fname = filterPath( $fname );
+	$fname =~ s/[\/\\]/_/g;
+	$fname =~ s/^./_/;
+	
+	# Reserved filtering
+	for my $res ( @reserved ) {
+		if ( $lc( $fname ) eq lc( $res ) ) {
+			$fname	= "_$fname";
+			last;
+		}
+	}
+	
+	return substr( $fname, 0, FILE_NAME_LIMIT );
+}
+
 # Relative storage directory
 sub storage {
 	my ( $path ) = @_;
+	state $dir;
 	
-	# Remove leading spaces and trailing slashes, if any
-	( my $dir = STORAGE_DIR ) =~ s/^[\s]+|[\s\/]+$//g;
+	unless ( defined $dir ) {
+		$dir = pacify( STORAGE_DIR );
+		if ( $dir eq '' ) {
+			die "Storage directory is empty";
+		}
+		
+		$dir = filterPath( $dir );
+		unless ( -d $dir && -r $dir && -w $dir ) {
+			die "Storage directory is not accessible";
+		}
+	}
 	
 	$path	= pacify( $path );
 	
-	# Remove leading slashes and spaces, if any
-	$path	=~ s/^[\s\/]+//g;
-	
-	# Double dots
+	# Remove leading slashes and spaces, if any, and double dots
+	$path	=~ s/^[\s\/]+//;
 	$path	=~ s/\.{2,}/\./g;
 	
 	return catfile( $dir, $path );
 }
 
+# Rename duplicate files until the filename doesn't conflict
+sub dupRename {
+	my ( $dir, $fname, $path ) = @_;
+	
+	my ( $base, $ext ) = fileparse( $fname, qr/\.[^.]*/ );
+	my $i	= 1;
+	
+	# Keep modifying until file name doesn't exist
+	while ( -e $path ) {
+		$path	= catfile( $dir, "${base} ($i)$ext" );
+                $i++;
+	}
+	
+	return $path;
+}
+
 # File lock/unlock helper
 sub fileLock {
 	my ( $fname, $ltype ) = @_;
-	my $fl		= "$fname.lock___";
+	
+	$fname	= unifySpaces( $fname );
+	unless ( $fname =~ /^(.*)$/ ) {
+		# File name failure
+		return 0;
+	}
+	$fname	= canonpath( $1 );
+	
+	# Lockfile name
+	my $fl	= "$fname.lock___";
 	
 	# Default to removing lock
-	$ltype		//= 0;
+	$ltype	//= 0;
 	
 	# Remove lock
-	if ( $ltype eq 0 ) {
+	if ( $ltype == 0 ) {
 		# No lock
 		if ( ! -f $fl ) {
 			return 1;
 		}
-		unlink $fl;
-		return 1;
+		unlink( $fl ) or return 0;
+		return 1; # Lock removed
 	}
 	
 	my $tries	= LOCK_TRIES;
-	while ( not sysopen ( $fl, $fname, O_WRONLY | O_EXCL | O_CREAT ) ) {
+	while ( not sysopen ( my $fh, $fl, O_WRONLY | O_EXCL | O_CREAT ) ) {
 		if ( $tries == 0 ) {
 			return 0;
+		}
+		
+		# Couldn't open lock even without lock file existing?
+		if ( $! && $! != EEXIST ) {
+			return 0; # Lock failed
 		}
 		
 		$tries--;
 		sleep 0.1;
 	}
 	
+	# Lock acquired
 	return 1;
 }
 
@@ -379,33 +559,44 @@ sub fileLock {
 sub fileList {
 	my ( $dir, $fref, $pattern ) = @_;
 	unless ( -d $dir ) {
-		return undef;
+		return;
 	}
 	
-	my $dh;
-	unless ( opendir( $dh, $dir ) ) {
-		return undef;
+	$pattern	= 
+	quotemeta( $pattern ) unless ref( $pattern ) eq 'Regexp';
+	
+	find( sub { 
+		if ( $_ =~ $pattern, - $File::Find:name );
+		push( @fref, $File::Find::name );
+	}, $dir );
+}
+
+# Get file contents
+sub fileRead {
+	my ( $file ) = @_;
+	my $out	= '';
+	
+	$file	=~ /^(.*)$/ and $file = $1;
+	
+	open ( my $lines, '<:encoding(UTF-8)', $file ) or exit 1;
+	while ( <$lines> ) {
+		$out .= $_;
 	}
 	
-	while ( my $entry = readdir( $dh ) ) {
-		if ( $entry eq '.' or $entry eq '..' ) {
-			next;
-		}
-		
-		my $path = catfile( $dir, $entry );
-		
-		if ( -d $path ) {
-			# Subfolder
-			fileList( $path, @$fref, $pattern );
-		} else {
-			# File pattern match
-			if ( $entry =~ $pattern ) {
-				push( @$fref, $path );
-			}
-		}
-	}
+	close ( $lines );
+	return $out;
+}
+
+# Write contents to file
+sub fileWrite {
+	my ( $file, $data ) = @_;
 	
-	closedir( $dh );
+	$file	=~ /^(.*)$/ and $file = $1;
+	
+	open ( my $lines, '>:encoding(UTF-8)', $file ) or exit 1;
+	print $lines $data;
+	
+	close ( $lines );
 }
 
 # Search directory for words
@@ -481,17 +672,13 @@ sub intRange {
 
 # Get raw __DATA__ content as text
 sub getRawData {
-	state $data = '';
-	if ( length ( $data ) ) {
-		return $data;
+	state $data;
+	
+	unless (defined $data) {
+		local $/ = undef;
+		$data = <DATA>;
 	}
 	
-	my @raw;
-	while ( my $line = <DATA> ) {
-		push ( @raw, $line );
-	}
-	
-	$data = join( '', @raw );
 	return $data;
 }
 
@@ -529,57 +716,49 @@ sub mimeList {
 # Timestamp helper
 sub dateRfc {
 	my ( $stamp ) = @_;
- 	my $t = Time::Piece->strptime( $stamp, '%s' );
- 	return $t->strftime();
+	
+	# Fallback to current time
+	$stamp = time() unless defined $stamp;
+	my $t = Time::Piece->strptime( "$stamp", '%s' );
+	
+	# RFC 2822
+	return $t->strftime( '%a, %d %b %Y %H:%M:%S %z' );
 }
 
 # Limit the date given to a maximum value of today
 sub verifyDate {
-	my ( $stamp ) = @_;
+	my ( $stamp, $now ) = @_;
 	
-	# Split stamp to components
-	my ( $year, $month, $day ) 
-	 	 	= $stamp =~ m{^(\d{4})/(\d{2})/(\d{2})$};
+	# Current date ( defaults to today )
+	$now	//= localtime->strftime('%Y-%m-%d');
 	
-	$year	//= 0;
-	$month	//= 0;
-	$day	//= 0;
+	# Split stamp to components ( year, month, day )
+	my ( $year, $month, $day ) = $stamp =~ m{^(\d{4})/(\d{2})/(\d{2})$};
 	
-	# Day range
-	if ( $day < 1 || $day > 31 ) {
-		return 0;
-	}
+	# Set checks
+	return 0 unless defined( $year ) && defined( $month ) && defined( $day );
 	
-	# Month range
-	if ( $month < 1 || $month > 12 ) {
-		return 0;
-	}
+	# Range checks for year, month, day
+	return 0 if  $year < 1900 ||  $month < 1 || $month > 12 || $day < 1 || $day > 31;
 	
-	# Year minimum
-	if ( $year < 1900 ) {
-		return 0;
-	}
-	
-	# Prevent exceeding current date
-	
-	# Current date
- 	my $now 	= localtime->strftime('%Y-%m-%d');
-	my ( $year_, $month_, $day_ ) 
-			= $now =~ m{^(\d{4})-(\d{2})-(\d{2})$};
+	# Current date ( year, month, day )
+	my ( $year_, $month_, $day_ ) = $now =~ m{^(\d{4})-(\d{2})-(\d{2})$};
 	
 	# Given year greater than current year?
 	if ( $year > $year_ ) {
 		return 0;
+	}
 	
 	# This year given?
-	} elsif ( $year == $year_ ) {
+	if ( $year == $year_ ) {
 		
 		# Greater than current month?
 		if ( $month > $month_ ) {
 			return 0;
-			
+		}
+		
 		# Greater than current day?
-		} elsif ( $month == $month_ && $day > $day_ ) {
+		if ( $month == $month_ && $day > $day_ ) {
 			return 0;
 		}
 	}
@@ -588,20 +767,14 @@ sub verifyDate {
 	my $is_leap = (
 		( $year % 4 == 0 && $year % 100 != 0 ) || 
 		( $year % 400 == 0 ) 
-	) ? 1 : 0;
+	);
 	
 	# Days in February, adjusting for leap years
-	my @dm 	 	= ( 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 );
-	if ( $month == 2 && $is_leap ) {
-		$dm[1]	= 29 
-	}
+	my @dm	= ( 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 );
+	$dm[1]	= 29 if $month == 2 && $is_leap;
 	
 	# Maximum day for given month
-	my $m_day	= $dm[$month - 1];
-	
-  	if ( $day > $m_day ) {
-		return 0;
-	}
+	return 0 if $day > $dm[$month - 1];
 	
 	return 1;
 }
@@ -767,92 +940,237 @@ sub requestHeaders {
 	return %headers;
 }
 
+# Temporary storage for incoming form data
+sub formDataStream {
+	my ( $tfname, $clen, $err ) = @_;
+	
+	my $chunk;
+	my $bytes		= 0;
+	
+	my ( $tfh, $tfn )	= 
+	tempfile(
+		DIR	=> storage( UPLOADS ), 
+		SUFFIX	=> '.tmp' 
+	);
+	
+	if ( !defined( $tfh ) ) {
+		$$err = "Failed to create a temp file for form data";
+		return undef;
+	}
+	
+	$$tfname = $tfn;
+	
+	while ( $bytes < $clen ) {
+		# Reset chunk
+		$chunk		= '';
+		my $read	= sysread( STDIN, $chunk, $clen - $bytes );
+		
+		if ( !defined( $read ) ) {
+			$$err = "Error reading input data";
+			return undef;
+		}
+		
+		print $tfh $chunk;
+		$bytes	+= $read;
+	}
+	
+	# Recheck boundary size
+	if ( $bytes != $clen ) {
+		$$err = "Boundary overflow: expected $clen, got $bytes";
+		return undef;
+	}
+
+	# Reset seek to beginning of file
+	seek( $tfh, 0, 0 ) or do {
+		$$err = "Failed to reset seek position to beginning of temp file";
+		return undef;
+	}
+	
+	return $tfh;
+}
+
+# Process form data boundary segments
+sub formDataSegment {
+	my ( $buffer, $boundary, $err, $fields, $uploads ) = @_;
+	
+	# Split the segment by boundary
+	my @segs = split(/--\Q$boundary\E(?!-)/, $buffer );
+	shift @segs if @segs > 0;
+	pop @segs if @segs && $segs[-1] eq '';
+	
+	my $pattern	= 
+	qr/
+		form-data;\s?					# Marker
+		name="([^"]+)"(?:;\s?filename="([^"]+)")?	# Labeled names
+	/ix;
+	
+	foreach my $part ( @segs ) {
+		
+		# Break by new lines
+		my ( $headers, $content ) = split(/\r?\n\r?\n/, $part, 2 ) or do  {
+			$$err = "Header and content split failed";
+			return undef;
+		}
+		
+		if ( 
+			!defined( $headers )	|| 
+			!defined( $content )	|| 
+			$content =~ /^\s*$/ 
+		) {
+			$$err = "Malformed multipart data, missing headers or content";
+			return undef;
+		}
+		
+		# Parse headers
+		my %parts;
+		foreach my $line ( split( /\r?\n/, $headers ) ) {
+			next unless $line;
+			next unless $line =~ /^(\S+):\s*(.*)/;
+			
+			my ( $key, $value ) = ( lc( unifySpaces( $1, '-' ) ), $2 );
+			trim( \$value );
+			
+			if ( exists( $parts{$key} ) ) {
+				if ( ref( $parts{$key} ) ne 'ARRAY' ) {
+   					# Convert to array
+					$parts{$key} = [$parts{$key}, $value];
+				} else {
+					push( @{$parts{$key}}, $value );
+				}
+			} else {
+				$parts{$key} = $value;
+			}
+		}
+		
+		# File uploads
+		if ( $parts{'content-disposition'} =~ /$pattern/ ) {
+			my ( $name, $fname )	= ( $1, $2 );
+			
+			if ( !defined( $fname ) || !defined( $name ) ) {
+				next;
+			}
+			
+			my $ptype	= 
+			$parts{'content-type'} // 'application/octet-stream';
+			
+			$fname		= filterFileName( $fname );
+			$name		= filterFileName( $name );
+			
+			my ( $tfh, $tname ) = tempfile();
+			
+			# Temp file failed?
+			if ( !$tfh ) {
+				$$err = "Temp file creation error for file upload";
+				return undef;
+			}
+			
+			print $tfh $content;
+			close $tfh;
+			
+			my $dir		= storage( UPLOADS );
+			my $fpath	= catfile( $dir, $fname );
+			
+			# Find conflict-free file name
+			$fpath		= dupRename( $dir, $fname, $fpath );
+			
+			if ( !move( $tname, $fpath ) ) {
+				$$err = "Error moving temp upload file $!";
+				return undef;
+			}
+			
+			push( @{$uploads}, {
+				name		=> $name,
+				filename	=> $fname,
+				path		=> $fpath,
+				content_type	=> $ptype
+			} );
+			
+			# Done with upload file
+			next;
+		}
+		
+		# Ordinary form data
+		my $name = $parts{'name'};
+		$fields->{$name} = $content;
+	}
+}
+
 # Sent binary data
 sub formData {
-	state %data	= ();
+	state %data = ();
 	
 	if ( keys %data ) {
 		return %data;
 	}
 	
 	my %request_headers	= requestHeaders();
+	my $clen		= $request_headers{'content_length'} // 0;
+	if ( !$clen ) {
+		return %data;
+	}
+	
 	my $ctype		= $request_headers{'content_type'} // '';
 	
- 	# Check multipart boundary
+	# Check multipart boundary
 	my $boundary;
-	if ( $ctype =~ /boundary=(.+)$/ ) {
-		$boundary = $1;
+	if ( $ctype =~ /^multipart\/form-data;.*boundary=(?:"([^"]+)"|([^;]+))/ ) {
+		$boundary = $1 || $2;
+		$boundary = unifySpaces( $boundary );
 	} else {
 		return %data;
 	}
 	
-	my %fields	= ();
-	my @uploads	= [];
+	my $err			= '';
+	my $tfname;
+	my $temp_fh		= formDataStream( $tfname, $clen, $err );
+	if ( $err ne '' ) {
+		return ( error => $err );
+	}
 	
-	my $pattern		= 
-	qr/
-		form-data;\s?					# Marker
-		name="([^"]+)"(?:;\s?filename="([^"]+)")?	# Labeled names
-	/ix;
+	my %fields = ();
+	my @uploads = [];
 	
-	my $sent	= do { local $/; <STDIN> };
-	my @segs	= split( /--\Q$boundary\E/, $sent );
-	
-	shift @segs;
-	pop @segs;
-	
-	foreach my $part ( @segs ) {
-		# Break by new lines
-		my ( $headers, $content ) = split( /\r?\n\r?\n/, $part, 2 );
-		
-		# Parse headers
-		my %parts;
-		foreach my $line ( split( /\r?\n/, $headers ) ) {
-			my ( $key, $value ) = split( /:\s*/, $line, 2 );
-			$parts{lc( $key )} = $value;
-		}
-		
-		if ( $parts{'content-disposition'} =~ /$pattern/ ) {
-			my $name	= $1;
-			my $fname	= $2;
-			my $ptype	= 
-				$parts{'content-type'} // 
-				'application/octet-stream';
+	# Process the file content in chunks
+	my $buffer = '';
+	while ( my $line = <$temp_fh> ) {
+		$buffer .= $line;
+
+		# Once a boundary is reached, process the segment
+		if ( $buffer =~ /--\Q$boundary\E(?!-)/ ) {
 			
-			# Intercept upload
-			if ( defined $fname ) {
-				my ( $tfh, $tname ) = tempfile();
-				print $tfh $content;
-				close $tfh;
-				
-				push( @uploads, {
-					name		=> $name,
-					filename	=> $fname,
-					path		=> $tname,
-					content_type	=> $ptype
-				} );
-				
-				next;
+			my $err;
+			formDataSegment( $buffer, $boundary, $err, \%fields, \@uploads );
+			if ( $err ne '' ) {
+				close $temp_fh;
+				unlink $tfname;
+				return ( error => $err );
 			}
 			
-			$fields{$name} = $content;
+			# Reset
+			$buffer = '';  
 		}
 	}
 	
-	$data{'fields'} = %fields;
-	$data{'files'}	= @uploads;
+	close $temp_fh;
+	unlink $tfname;
+	
+	$data{'fields'}	= \%fields;
+	$data{'files'}	= \@uploads;
 	
 	return %data;
 }
 
 # Current host or server name/domain/ip address
 sub siteRealm {
-	my $realm = lc( $ENV{SERVER_NAME} // '' ) =~ s/[^a-zA-Z0-9\.]//gr;
+	my $realm	= lc( $ENV{SERVER_NAME} // '' )
+	$realm		=~ s/[^a-zA-Z0-9\.\-]//gr;
 	
-	# Check for reqested realm, if it exists, and end early if invalid
-	my $dir = storage( "sites/$realm" );
+	# End early on empty realm
+	sendBadRequest() if ( $realm eq '' );
 	
-	if ( $realm eq '' || ! -d $dir ) {
+	# Check for reqested realm, if it exists
+	my $dir = storage( catfile( 'sites', $realm ) );
+	if ( ! -d $dir ) {
 		sendBadRequest();
 	}
 	
@@ -865,12 +1183,13 @@ sub isSecure {
 	my $scheme	= lc( $ENV{REQUEST_SCHEME} // 'http' );
 	
 	# Forwarded protocol, if set
-	my $frd		= 
+	my $frd		= lc(
 		$ENV{HTTP_X_FORWARDED_PROTO}	//
 		$ENV{HTTP_X_FORWARDED_PROTOCOL}	//
-		$ENV{HTTP_X_URL_SCHEME}		// 'http';
+		$ENV{HTTP_X_URL_SCHEME}		// 'http'
+	);
 	
-	return ( $scheme eq 'https' || $frd  =~ /https/i ) ? 1 : 0;
+	return ( $scheme eq 'https' || $frd  =~ /https/ );
 }
 
 # HTTP Client request
@@ -1380,13 +1699,11 @@ END {
 sub getCookies {
 	state %sent;
 	
-	if ( keys %sent ) {
-		return %sent;
-	}
+	return %sent if keys %sent;
 	
-	my @items	= split( /;/, $ENV{'HTTP_COOKIE'} //= '' );
-	foreach ( @items ) {
-		my ( $k, $v )	= split( /=/, $_ );
+	my @items	= split( /;/, $ENV{'HTTP_COOKIE'} // '' );
+	foreach my $item ( @items ) {
+		my ( $k, $v )	= split( /=/, $item, 2 );
 		
 		# Clean prefixes, if any
 		$k		=~ s/^__(Host|Secure)\-//gi;
@@ -1412,18 +1729,15 @@ sub cookiePrefix {
 		'__Host-' : ( $request{'secure'} ? '__Secure-' : '' );
 }
 
-# Set a cookie with default parameters
-sub setCookie {
-	my ( $name, $value, $ttl ) = @_;
-	my $prefix	= cookiePrefix();
+# Set cookie values to user
+sub cookieHeader {
+	my ( $data, $ttl ) = @_;
+	
 	my %request	= getRequest();
-	
-	$ttl	//= COOKIE_EXP;
-	$ttl	= ( $ttl > 0 ) ? $ttl : ( ( $ttl == -1 ) ? 1 : 0 );
-	
+	my $prefix	= cookiePrefix();
 	my @values	= ( 
-		$prefix . "$name=$value",
-		'Path=' . COOKIE_PATH,
+		$prefix . $data,
+		'Path=' . ( COOKIE_PATH // '/' ),
 		'SameSite=Strict',
 		'HttpOnly',
 	);
@@ -1446,9 +1760,23 @@ sub setCookie {
 	print "Set-Cookie: $cookie\n";
 }
 
+# Set a cookie with default parameters
+sub setCookie {
+	my ( $name, $value, $ttl ) = @_;
+	
+	$ttl	//= COOKIE_EXP;
+	if ( $ttl < 0 ) {
+		$ttl = 0;
+	}
+	
+	cookieHeader( "$name=$value", $ttl );
+}
+
+# Erease already set cookie by name
 sub deleteCookie {
 	my ( $name ) = @_;
-	setCookie( $name, "", -1 );
+	
+	cookieHeader( "$name=", 0 );
 }
 
 
@@ -1459,6 +1787,15 @@ sub deleteCookie {
 
 
 
+# Strip any non-cookie ID data
+sub sessionCleanID {
+	my ( $id ) = @_;
+	$id		= pacify( $id );
+	$id		=~ /^([a-zA-Z0-9]{20,255})$/;
+	
+	return $id;
+}
+
 # Generate or return session ID
 sub sessionID {
 	my ( $sent ) = @_;
@@ -1466,17 +1803,22 @@ sub sessionID {
 	
 	$sent //= '';
 	if ( $sent ne '' ) {
-		$id = ( $sent =~ /^([a-zA-Z0-9]{20,255})$/ ); 
+		$id = sessionCleanID( $sent ); 
 	}
 	
 	if ( $id eq '' ) {
 		# New pseudorandom ID
-		$id = Digest::SHA::sha256_hex( 
+		$id = sha256_hex( 
 			Time::HiRes::time() . rand( 2**32 ) 
 		);
 	}
 	
 	return $id;
+}
+
+# Send session cookie
+sub sessionSend {
+	setCookie( 'session', sessionID(), SESSION_EXP );
 }
 
 # Create a new session with blank data
@@ -1536,8 +1878,7 @@ sub sessionStart {
 	$id	//= getCookieData( 'session' );
 	
 	# Clean ID
-	$id	= pacify( $id );
-	$id	=~ /^([a-zA-Z0-9]{20,255})$/;
+	$id	= sessionCleanID( $id );
 	
 	# Mark started
 	$start	= 1;
@@ -1582,6 +1923,7 @@ sub sessionSend {
 # Delete seession
 sub sessionDestroy {
 	my ( $id ) = @_;
+	$id		= sessionCleanID( $id );
 	my $db		= getDb( 'sessions.db' );
 	
 	$db->do( 'DELETE FROM sessions WHERE session_id = ?;', undef, $id );
@@ -1667,38 +2009,54 @@ sub genSalt {
 	return join( '', map( +@pool[rand( 64 )], 1..$len ) );
 }
 
+# Generate HMAC digest
+sub hmacDigest {
+	my ( $key, $data )	= @_;
+	my $hmac		= hmac_sha384( $data, $key );
+	
+	return unpack( "H*", $hmac );
+}
+
 # Generate a hash from given password and optional salt
 sub hashPassword {
-	my ( $pass, $salt, $csalt ) = @_;
+	my ( $pass, $salt, $rounds ) = @_;
 	
 	# Generate new salt, if empty
 	$salt		//= genSalt( 16 );
+	$rounds		//= HASH_ROUNDS;
 	
 	# Crypt-friendly blocks
 	my @chunks	= 
 		split( /(?=(?:.{8})+\z)/s, sha512_hex( $salt . $pass ) );
 	
-	my $cr		= ''; # Crypt result
-	my $block	= ''; # Hash block
+	my $out		= '';	# Hash result
+	my $key		= '';	# Digest key per block
+	my $block	= '';	# Hash block
 	
 	for ( @chunks ) {
-		# Use chunk's last 2 chars as salt for crypt and hash 1000 times
-		$block = crypt( $_, substr( $_, 0, -2 ) );
-		for ( 1..HASH_ROUNDS ) {
-			$block = sha384_hex( $block );
+		# Generate digest with key from crypt
+		$key	= crypt( $_, substr( sha256_hex( $_ ), 0, -2 ) );
+		$block	= hmacDigest( $key, $_ );
+		
+		# Generate hashed block from digest
+		for ( 1..$rounds ) {
+			$block	= sha384_hex( $block );
 		}
 		
-		$cr		.= $block;
+		# Add block to output
+		$out		.= sha384_hex( $block );
 	}
 	
-	return $salt . $cr;
+	return $salt . ':' . $rounds . ':' . $out;
 }
 
 # Match raw password against stored hash
 sub verifyPassword {
 	my ( $pass, $stored ) = @_;
 	
-	if ( $stored eq hashPassword( $pass, substr( $stored, 0, 16 ) ) ) {
+	my ( $salt, $rounds, $spass ) = split( /:/, $stored );
+	
+	if ( $stored eq hashPassword( $pass, $salt, $rounds ) ) {
 		return 1;
 	}
 	
@@ -1805,20 +2163,28 @@ sub footnote {
 	return '';
 }
 
-# TODO: Process uploaded media embeds
+# Process uploaded media embeds
 sub embeds {
 	my ( $ref, $source, $title, $caption, $preview  ) = @_;
+	
+	my %data	= (
+		src	=> $source,
+		title	=> $title,
+		caption	=> $caption,
+		preview	=> $preview
+	);
+	
 	for ( $ref ) {
 		/audio/ and do {
-			return 'audio';
+			return replace( template( 'tpl_audio_embed' ), %data );
 		};
 		
 		/video/ and do {
-			return 'video';
+			return replace( template( 'tpl_video_embed' ), %data );
 		};
 		
 		/figure/ and do {
-			return 'figure';
+			return replace( template( 'tpl_figure_embed' ) );
 		};
 	}
 	
@@ -2027,6 +2393,72 @@ sub formatLists {
 	return $html;
 }
 
+# Table data row
+sub formatRow {
+	my ( $row, $header )	= @_;
+	$header		//= 0;
+	
+	my $tag		= $header ? 'th' : 'td';
+	
+	# Split on pipe symbol, skipping escaped pipes '\|'
+	my @data	= split( /(?<!\\)\|/, $row );
+	my $html	= join( '', map { "<$tag>$_</$tag>" } @data );
+	
+	return "<tr>$html</tr>\n";
+}
+
+# Convert ASCII table to HTML
+sub formatTable {
+	my ( $table ) = @_;
+	my $html	= '';
+	
+	# Lines = Rows
+	my @rows	= split( /\n/, $table );
+	
+	# In header row, if true
+	my $first	= 1;
+	
+	foreach my $row ( @rows ) {
+		trim( \$row );
+		
+		# Skip empty rows or lines with just separator
+		next if $row eq '' || $row =~ /^(\+|-)+$/;
+		
+		# First round is the header
+		$html	.= formatRow( $row, $first );
+		next unless $first;
+		
+		$first	= 0;
+	}
+	
+	return "<table>$html</table>\n";
+}
+
+# Format code to HTML
+sub escapeCode {
+	my ( $code ) = @_;
+	
+	return '' if !defined( $code ) || $code eq ''; 
+	
+	if ( !Encode::is_utf8( $code ) ) {
+		$code = Encode::decode( 'UTF-8', $code );
+	}
+	
+	# Double esacped ampersand workaround
+	$code =~ s/&(?!(amp|lt|gt|quot|apos);)/&amp;/g; 
+	
+	$code =~ s/</&lt;/g;
+	$code =~ s/>/&gt;/g;
+	$code =~ s/"/&quot;/g;
+	$code =~ s/'/&apos;/g;
+	$code =~ s/\\/&#92;/g;
+	
+	$code =~ s/([^\x00-\x7F])/sprintf("&#x%X;", ord($1))/ge;
+	trim( \$code );
+	
+	return $code;
+}
+
 # Simple subset of Markdown formatting with embedded media extraction
 sub markdown {
 	my ( $data ) = @_;
@@ -2057,7 +2489,8 @@ sub markdown {
 			
 			# Link with title?
 			if ( $title ne '' ) {
-				return '<a href="'. $dest . '" title="' . 
+				return 
+				'<a href="'. $dest . '" title="' . 
 					$title . '">' . $text . '</a>';
 			}
 			
@@ -2082,28 +2515,39 @@ sub markdown {
 		},
 		
 		# Headings
-		'\n([#=]{1,6})\s?(.*?)\s?\1?\n'
+		'(^|\n)(?<delim>[#=]{1,6})\s?(?<text>.*?)\s?\2?\n?' 
 		=> sub {
-			my $i = strsize( $1 );
-			return "<h$i>$2</h$i>";
+			my $level	= length( $+{delim} );	# Indent depth
+			my $text	= $+{text};		# Heading
+			
+			trim( \$text );
+			return "<h$level>$text</h$level>";
+		},
+		
+		# Inline code
+		'`(?<code>[^`]*)`' 
+		=> sub {
+			my $code = escapeCode( $+{code} );
+			return "<code>$code</code>";
+		},
+		
+		# Multi-line code
+		'^|\n```(?<code>.*?)```'
+		=> sub {
+			my $code = escapeCode( $+{code} );
+			return "<pre><code>$code</code></pre>";
+		},
+		
+		# Tables
+		'(\+[-\+]+[\+\-]+\s*\|\s*.+?\n(?:\+[-\+]+[\+\-]+\s*\|\s*.+?\n)*)'
+		=> sub {
+			return formatTable( $_[0] );
 		},
 		
 		# Horizontal rule
 		'\n(\-|_|\+){5,}\n'
 		=> sub {
 			return '<hr />';
-		},
-		
-		# Inline code
-		'\s`([^`]*)`\s' 
-		=> sub {
-			return "<code>$1<\/code>";
-		},
-		
-		# Multi-line code
-		'\n```(.*?)```\n?'
-		=> sub {
-			return "<pre><code>$1<\/code><\/pre>";
 		},
 		
 		# References, Media, Embeds etc...
@@ -2148,9 +2592,13 @@ sub markdown {
 	);
 	
 	# Replace placeholders with formatted HTML
-	foreach my $match ( keys %patterns ) {
-		my $html = $patterns{$match};
-		$data =~ s/$match/$html->()/ge;
+	foreach my $pat ( keys %patterns ) {
+		my $subr	= $patterns{$pat};
+		if ( $pat =~ /<\w+>/ ) {
+			$data =~ s/$pat/sub { $subr->(%+) }/ge;
+		} else {
+			$data =~ s/$pat/sub { $subr->($&) }/ge;
+		}
 	}
 	
 	# Format lists
