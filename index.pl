@@ -320,6 +320,26 @@ sub strsize {
 	return length( $str );
 }
 
+# Merge arrays and return unique items
+sub mergeArrayUnique {
+	my ( $items, $nitems ) = @_;
+	
+	# Check for array or return as-is
+	unless ( ref( $items ) eq 'ARRAY' ) {
+		die "Invalid parameter type for mergeArrayUnique\n";
+	}
+	
+	if ( ref( $nitems ) eq 'ARRAY' && @{$nitems} ) {
+		push ( @{$items}, @{$nitems} );
+		
+		# Filter duplicates
+		my %dup;
+		@{$items} = grep { !$dup{$_}++ } @{$items};
+	}
+	
+	return $items;
+}
+
 # Find if text starts with given search needle
 sub textStartsWith {
 	my ( $text, $needle ) = @_;
@@ -423,13 +443,8 @@ sub filterPath {
 	state @reserved	= qw( : * ? " < > | ; );
 	
 	# New filter characters?
-	if ( ref($ns) eq 'ARRAY' && @{$ns} ) {
-		# Merge with the reserved pool
-		push( @reserved, @{$ns} );
-		
-		# Remove duplicates
-		my %dup;
-		@reserved = grep { !$dup{$_}++ } @reserved;
+	if ( $ns ) {
+		$reserved = @{ mergeArrayUnique( \@reserved, $ns ) };
 	}
 	
 	my $chars	= join( '', map { quotemeta( $_ ) } @reserved );
@@ -454,11 +469,8 @@ sub filterFileName {
 	);
 	
 	# Append to reserved list?
-	if ( ref($ns) eq 'ARRAY' && @{$ns} ) {
-		push( @reserved, @{$ns} );
-		
-		my %dup;
-		@reserved = grep { !$dup{$_}++ } @reserved;
+	if ( $ns ) {
+		$reserved = @{ mergeArrayUnique( \@reserved, $ns ) };
 	}
 	
 	# Basic filtering
@@ -2469,6 +2481,37 @@ sub escapeCode {
 	return $code;
 }
 
+# Wrap body text and line breaks in paragraphs
+sub makeParagraphs {
+	my ( $html, $ns )	= @_;
+	
+	# Base level protected tags
+	state @protected	= 
+	[ 'p', 'ul', 'pre', 'code', 'table', 'figure', 'figcaption', 'address', 
+		'details', 'span', 'embed', 'video', 'audio', 'texteara', 'input' ];
+	
+	if ( $ns ) {
+		$protected = @{ mergeArrayUnique( \@protected, $ns ) };
+	}
+	
+	my $tags	= join( '|', @protected );
+	
+	# Wrap protected tags in placeholders
+	$html		=~ 
+	s|(<($tags)[^>]*>.*?</\2>)|__PROTECT__$1__ENDPROTECT__|gs;
+	
+	# Wrap paragraphs
+	$html		=~ 
+	s/(?<!__PROTECT__)\r?\n\s*\r?\n(?!__ENDPROTECT__)/</p><p>/g;
+	
+	$html		= 
+	"<p>$html</p>" unless $html =~ /^<p>/ || $html =~ /__PROTECT__/;
+	
+	# Restore protected tags
+	$html		=~ s/__PROTECT__(.*?)__ENDPROTECT__/$1/g;
+	return $html;
+}
+
 # Simple subset of Markdown formatting with embedded media extraction
 sub markdown {
 	my ( $data ) = @_;
@@ -2613,8 +2656,9 @@ sub markdown {
 	
 	# Format lists
 	$data = formatLists( $data );
- 	
-	return $data;
+	
+	# Wrap paragraphs 
+	return makeParagraphs( $data );
 }
 
 
