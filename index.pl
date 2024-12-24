@@ -2487,7 +2487,10 @@ sub formatNewList {
 sub formatEndLists {
 	my ( $lstack, $html ) = @_;
 	while ( @$lstack ) {
-		$$html .= ( $lstack->[-1]{type} eq 'ul' ) ? '</ul>' : '</ol>';
+		$$html .= 
+		( $lstack->[-1]{type} eq 'ul' ) ? '</ul>' : (
+			 ( $lstack->[-1]{type} eq 'ol' ) ? '</ol>' : '</dl>'
+		);
 		pop @$lstack;
 	}
 }
