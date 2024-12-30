@@ -983,7 +983,7 @@ sub formDataStream {
 		SUFFIX	=> '.tmp' 
 	);
 	
-	unless( $tfh ) {
+	unless ( $tfh ) {
 		$$err = "Failed to create a temp file for form data";
 		return undef;
 	}
@@ -1120,7 +1120,17 @@ sub formDataSegment {
 				unlink( $tfh );
 				return undef;
 			};
-			close( $tfh );
+			
+			close( $tfh ) or do {
+				$$err = "Error closing temporary file";
+				return undef;
+			};
+			
+			# Special case if file was moved/deleted mid-operation
+			unless ( -e $tfn ) {
+				$$err = "Temporary file was moved, deleted, or quarantined";
+				return undef;	# Nothing left to close or delete
+			}
 			
 			my $fpath	= catfile( $dir, $fname );
 			
