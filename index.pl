@@ -1015,10 +1015,11 @@ sub requestHeaders {
 
 # Temporary storage for incoming form data
 sub formDataStream {
-	my ( $tfname, $clen, $err ) = @_;
+	my ( $clen ) = @_;
 	
 	my $chunk;
 	my $bytes		= 0;
+	my %err;
 	
 	my ( $tfh, $tfn )	= 
 	tempfile(
@@ -1027,11 +1028,13 @@ sub formDataStream {
 	);
 	
 	unless ( $tfh ) {
-		$$err = "Failed to create a temp file for form data";
-		return undef;
+		append( 
+			\%err, 'formDataStream', 
+			report( "Failed to create a temp file for form data" ) 
+		);
+		return { error => \%err };
 	}
 	
-	$$tfname = $tfn;
 	local $| = 1;	# Temporarily disable output buffering
 	
 	my $chunk_size	= 65536;
@@ -1045,43 +1048,59 @@ sub formDataStream {
 		my $read	= sysread( STDIN, $chunk, $read_size );
 		
 		if ( !defined( $read ) || $read == 0 ) {
-			$$err = "Error reading input data";
+			append( 
+				\%err, 'formDataStream', 
+				report( "Error reading input data" ) 
+			);
+			
 			close( $tfh );
 			unlink( $tfh );
-			return undef;
+			return { error => \%err };
 		}
 		
 		print $tfh $chunk or do {
-			$$err = "Error writing to form data temporary file: $!";
+			append( 
+				\%err, 'formDataStream', 
+				report( "Error writing to form data temporary file: $!" ) 
+			);
+			
 			close( $tfh );
 			unlink( $tfh );
-			return undef;
+			return { error => \%err };
 		};
 		$bytes	+= $read;
 	}
 	
 	# Recheck boundary size
 	if ( $bytes != $clen ) {
-		$$err = "Boundary overflow: expected $clen, got $bytes";
+		append( 
+			\%err, 'formDataStream', 
+			report( "Boundary overflow: expected $clen, got $bytes" ) 
+		);
+		
 		close( $tfh );
 		unlink( $tfh );
-		return undef;
+		return { error => \%err };
 	}
 
 	# Reset seek to beginning of file
 	seek( $tfh, 0, 0 ) or do {
-		$$err = "Failed to reset seek position to beginning of temp file";
+		append( 
+			\%err, 'formDataStream', 
+			report( "Failed to reset seek position to beginning of temp file" ) 
+		);
+		
 		close( $tfh );
 		unlink( $tfh );
-		return undef;
+		return { error => \%err };
 	};
 	
-	return $tfh;
+	return { name => $tfn, stream => $tfh };
 }
 
 # Process form data boundary segments
 sub formDataSegment {
-	my ( $buffer, $boundary, $err, $fields, $uploads ) = @_;
+	my ( $buffer, $boundary, $fields, $uploads ) = @_;
 	
 	# Split the segment by boundary
 	my @segs = split(/--\Q$boundary\E(?!-)/, $buffer );
@@ -1096,22 +1115,29 @@ sub formDataSegment {
 
 	# File uploads and form handling temp file directory
 	my $dir		= storage( UPLOADS );
+	my %err;
 	
 	foreach my $part ( @segs ) {
 		
 		# Break by new lines
 		my ( $headers, $content ) = split(/\r?\n\r?\n/, $part, 2 ) or do  {
-			$$err = "Header and content split failed";
-			return undef;
-		}
+			append( 
+				\%err, 'formDataSegment', 
+				report( "Header and content split failed" ) 
+			);
+			return { error => \%err };
+		};
 		
 		if ( 
 			!defined( $headers )	|| 
 			!defined( $content )	|| 
 			$content =~ /^\s*$/ 
 		) {
-			$$err = "Malformed multipart data, missing headers or content";
-			return undef;
+			append( 
+				\%err, 'formDataSegment', 
+				report( "Malformed multipart data, missing headers or content" ) 
+			);
+			return { error => \%err };
 		}
 		
 		# Parse headers
@@ -1153,26 +1179,40 @@ sub formDataSegment {
 			
 			# Temp file failed?
 			unless ( $tfh ) {
-				$$err = "Temp file creation error for file upload";
-				return undef;
+				append( 
+					\%err, 'formDataSegment', 
+					report( "Temp file creation error for file upload ${name} at ${tname}" ) 
+				);
+				return { error => \%err };
 			}
 			
 			print $tfh $content or do {
-				$$err = "Error writing to form data temporary file: $!";
+				append( 
+					\%err, 'formDataSegment', 
+					report( "Error writing to form data temporary file: $!" ) 
+				);
+				
 				close( $tfh );
 				unlink( $tfh );
-				return undef;
+				return { error => \%err };
 			};
 			
 			close( $tfh ) or do {
-				$$err = "Error closing temporary file";
-				return undef;
+				append( 
+					\%err, 'formDataSegment', 
+					report( "Error closing temporary file: ${tfn}" ) 
+				);
+				return { error => \%err };
 			};
 			
 			# Special case if file was moved/deleted mid-operation
 			unless ( -e $tfn ) {
-				$$err = "Temporary file was moved, deleted, or quarantined";
-				return undef;	# Nothing left to close or delete
+				append( 
+					\%err, 'formDataSegment', 
+					report( "Temporary file was moved, deleted, or quarantined: ${tfn}" ) 
+				);
+				# Nothing left to close or delete
+				return { error => \%err };
 			}
 			
 			my $fpath	= catfile( $dir, $fname );
@@ -1181,9 +1221,14 @@ sub formDataSegment {
 			$fpath		= dupRename( $dir, $fname, $fpath );
 			
 			move( $tname, $fpath ) or do {
-				$$err = "Error moving temp upload file $!";
+				append( 
+					\%err, 'formDataSegment', 
+					report( "Error moving temp upload file $!" ) 
+				);
 				unlink( $tname );
-				return undef;
+				
+				# Don't continue until moving issue is resolved
+				return { error => \%err };
 			};
 			
 			push( @{$uploads}, {
@@ -1201,6 +1246,12 @@ sub formDataSegment {
 		my $name = $parts{'name'};
 		$fields->{$name} = $content;
 	}
+	
+	if ( keys %err ) {
+		return { error => \%err };
+	}
+	
+	return {};
 }
 
 # Sent binary data
@@ -1208,14 +1259,16 @@ sub formData {
 	state %data = ();
 	
 	if ( keys %data ) {
-		return %data;
+		return \%data;
 	}
 	
+	my %err;
 	my %request_headers	= requestHeaders();
 	my $clen		= $request_headers{'content_length'} // 0;
 	unless ( $clen && $clen =~ /^\d+$/ ) {
-		# Invalid content length
-		return \%data;
+		append( \%err, 'formData', report( "Invalid content length" ) );
+		
+		return { fields => [], files => [], error => \%err };
 	}
 	
 	my $ctype		= $request_headers{'content_type'} // '';
@@ -1226,14 +1279,21 @@ sub formData {
 		$boundary = $1 || $2;
 		$boundary = unifySpaces( $boundary );
 	} else {
-		return \%data;
+		append( \%err, 'formData', report( "No multipart boundary found" ) );
+		
+		return { fields => [], files => [], error => \%err };
 	}
 	
-	my $err			= '';
-	my $tfname;
-	my $temp_fh		= formDataStream( $tfname, $clen, $err );
-	if ( $err ne '' ) {
-		return ( error => $err );
+	my %state		= formDataStream( $clen );
+	if ( hasErrors( $state ) ) {
+		%err = %{$state->{error}};
+		# Merge stream errors
+		append( 
+			\%err, 'formData', 
+			report( "Error saving form data stream" )
+		);
+		
+		return { fields => [], files => [], error => \%err };
 	}
 	
 	my %fields = ();
@@ -1241,16 +1301,23 @@ sub formData {
 	
 	# Process the file content in chunks
 	my $buffer = '';
-	while ( my $line = <$temp_fh> ) {
+	while ( my $line = <$state->{stream}> ) {
 		$buffer .= $line;
 
 		# Once a boundary is reached, process the segment
 		if ( $buffer =~ /--\Q$boundary\E(?!-)/ ) {
-			formDataSegment( $buffer, $boundary, $err, \%fields, \@uploads );
-			if ( $err ne '' ) {
-				close $temp_fh;
-				unlink $tfname;
-				return ( error => $err );
+			my %segment = formDataSegment( $buffer, $boundary, \%fields, \@uploads );
+			if ( hasErrors( $segment ) ) {
+				%err = %{$segment->{error}};
+				append( 
+					\%err, 'formData', 
+					report( "Form data stream failed" )
+				);
+				
+				# Cleanup form data stream
+				close( $state->{stream} );
+				unlink( $state->{name} );
+				return { fields => [], files => [], error => \%err };
 			}
 			
 			# Reset
@@ -1258,8 +1325,9 @@ sub formData {
 		}
 	}
 	
-	close $temp_fh;
-	unlink $tfname;
+	# Cleanup form data stream
+	close( $state->{stream} );
+	unlink( $state->{name} );
 	
 	$data{'fields'}	= \%fields;
 	$data{'files'}	= \@uploads;
