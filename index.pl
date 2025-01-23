@@ -328,6 +328,19 @@ sub strsize {
 	return length( $str );
 }
 
+# Find if text starts with given search needle
+sub textStartsWith {
+	my ( $text, $needle ) = @_;
+	
+	$needle	//= '';
+	$text	//= '';
+	
+	my $nl	= length( $needle );
+	return 0 if $nl > length($text);
+	
+	return substr( $text, 0, $nl ) eq $needle;
+}
+
 # Merge arrays and return unique items
 sub mergeArrayUnique {
 	my ( $items, $nitems ) = @_;
@@ -348,19 +361,49 @@ sub mergeArrayUnique {
 	return $items;
 }
 
-# Find if text starts with given search needle
-sub textStartsWith {
-	my ( $text, $needle ) = @_;
+# Append hash value by incrementing numerical key index
+sub append {
+	my ( $ref, $key, $msg ) = @_;
 	
-	$needle	//= '';
-	$text	//= '';
+	# Nothing to append
+	unless ( defined( $ref ) && ref( $ref ) eq 'HASH' ) {
+		return;
+	}
 	
-	my $nl	= length( $needle );
-	return 0 if $nl > length($text);
-	
-	return substr( $text, 0, $nl ) eq $needle;
+	if ( exists( $ref->{$key} ) ) {
+		# Increment indexed hash value
+		$ref->{$key}{ 
+			scalar( keys %$ref->{$key} ) + 1 
+		} = $msg;
+		return;
+	}
+	$ref->{$key} = { 1 => $msg };
 }
 
+# Error and message report formatting helper
+sub report {
+	my ( $msg )	= @_;
+	my ( $pkg, $fname, $line, $func ) = caller( 1 );
+	
+	$msg	||= 'Empty message';
+	$msg	= unifySpaces( $msg );
+	$fname	= filterPath( $fname );
+	
+	return 
+	"${msg} ( Package: ${pkg}, File: ${fname}, " . 
+		"Subroutine: ${func}, Line: ${line} )";
+}
+
+# Check if hash has an 'error' key set and is not 0
+sub hasErrors {
+	my ( $ref )	= @_;
+	
+	return 
+	defined( $ref->{error} ) && ( 
+		( $ref->{error} eq 'HASH' && keys %{ $ref->{error} } ) || 
+		$ref->{error}
+	) ? 1 : 0;
+}
 
 # Hooks and extensions
 sub hook {
