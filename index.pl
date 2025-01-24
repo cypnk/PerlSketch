@@ -1864,7 +1864,7 @@ sub getDb {
 	state %dbh;
 	
 	if ( $close ) {
-		if ( ! keys %dbh ) {
+		unless ( keys %dbh ) {
 			return;
 		}
 		
@@ -1873,18 +1873,17 @@ sub getDb {
 			$dbh{$key}->disconnect();
 		}
 		%dbh = ();
-		return;
+		return { created = \@created };
 	}
-	
 	
 	# Database connection string format
 	$db	= pacify( $db );
 	$db	=~ s/\.{2,}/\./g;
 	
-	chomp( $db );
+	trim( \$db );
 	
 	if ( exists( $dbh{$db} ) ) {
-		return $dbh{$db};
+		return { cxn => $dbh{$db} };
 	}
 	
 	# Database file
@@ -1898,10 +1897,29 @@ sub getDb {
 		PrintError		=> 0,
 		RaiseError		=> 1,
 		Taint			=> 1
-	} ) or exit 1;
+	} );
+	
+	# Database connection failed?
+	unless ( $dbh{$db} ) { 
+		return {
+			cxn	=> undef,
+			error	=> 
+			report( "Failed to connect to database: " . 
+				$DBI::errstr )
+		};
+	}
 	
 	# Preemptive defense
-	$dbh{$db}->do( 'PRAGMA quick_check;' );
+	my $quick	= $dbh{$db}->do( 'PRAGMA quick_check;' );
+	unless ( $quick ) {
+		return {
+			cxn	=> undef,
+			error	=> 
+			report( "Error executing PRAGMA quick_check: " . 
+				$dbh{$db}->errstr )
+		};
+	}
+	
 	$dbh{$db}->do( 'PRAGMA trusted_schema = OFF;' );
 	$dbh{$db}->do( 'PRAGMA cell_size_check = ON;' );
 	
@@ -1915,27 +1933,50 @@ sub getDb {
 		$dbh{$db}->do( 'PRAGMA secure_delete = "1";' );
 		
 		# Install SQL, if available
-		my $schema = databaseSchema( $db );
+		my $schema	= databaseSchema( $db );
+		
 		if ( $schema ne '' ) {
 			my @sql = split( /-- --/, $schema );
 			for my $stmt ( @sql ) {
-				$dbh{$db}->do( $stmt );
+				$dbh{$db}->do( $stmt ) 
+				or return {
+					cxn	=> undef,
+					error	=> 
+					report( "Error executing schema statement: $stmt, " . 
+						$dbh{$db}->errstr )
+				};
 			}
-		} else {
-			httpCode( 500 );
-			print "Database error";
-			exit;
 		}
 		
 		# Instalation check
-		$dbh{$db}->do( 'PRAGMA integrity_check;' );
+		my $chk = $dbh{$db}->do( 'PRAGMA integrity_check;' );
+		if ( $chk ne 'ok' ) { 
+			return { 
+				cxn	=> undef,
+				error	=> 
+				report( "Integrity check failed: $chk" ) 
+			};
+		}
+		
 		$dbh{$db}->do( 'PRAGMA foreign_key_check;' );
 	}
 	
 	$dbh{$db}->do( 'PRAGMA journal_mode = WAL;' );
 	$dbh{$db}->do( 'PRAGMA foreign_keys = ON;' );
+	return { cxn => $dbh{$db} };
+}
+
+# Get last insert ID
+sub lastId {
+	my ( $dbh, $table, $field ) = @_;
+	my $dtype	= lc( $dbh->{type} // 'sqlite' );
 	
-	return $dbh{$db};
+	$table = unifySpaces( $table, '_' );
+	$field = unifySpaces( $field, '_' );
+	
+	return ( $dtype eq 'sqlite' ) ? 
+		$dbh->{cxn}->last_insert_rowid() : 
+		$dbh->{cxn}->last_insert_id( undef, undef, $table, $field );
 }
 
 # Cleanup
@@ -2102,12 +2143,24 @@ sub sessionWrite {
 # Read cookie data from database, given the ID
 sub sessionRead {
 	my ( $id ) = @_;
+	my %err;
 	
 	# Strip any non-cookie ID data
 	my ( $find ) = $id =~ /^([a-zA-Z0-9]{20,255})$/;
 	
-	my $db	= getDb( 'sessions.db' );
-	my $sth	= $db->prepare( qq(
+	my $dbh	= getDb( 'sessions.db' );
+	unless( hasErrors( $dbh ) ) {
+		# Fall through any errors from getDb()
+		%err = %{$dbh->{error}};
+		append( 
+			\%err, 'sessionRead', 
+			report( "Error in call to db connection" )
+		);
+		
+		return { error => \%err };
+	}
+		
+	my $sth	= $dbh->{cxn}->prepare( qq(
 		SELECT session_data FROM sessions 
 			WHERE session_id = ? LIMIT 1;
 	) );
@@ -2116,10 +2169,10 @@ sub sessionRead {
 	
 	# Load data to session, if it exists
 	if ( $data ) {
-		return $data->{session_data};
+		return { data => $data->{session_data} };
 	}
 	
-	return '';
+	return {};
 }
 
 # Start session with ID, if given, or a fresh session
@@ -2146,7 +2199,18 @@ sub sessionStart {
 		return;
 	}
 	
-	my $data = sessionRead( $id );
+	my %err;
+	my $info	= sessionRead( $id );
+	unless( hasErrors( $info ) ) {
+		%err = %{$info->{error}};
+		append( 
+			\%err, 'sessionStart', 
+			report( "Error starting session" )
+		);
+		
+		return { error => \%err };
+	}
+	my $data	= $info->{data} // '';
 	
 	# Invalid existing cookie? Reset
 	if ( $data eq '' ) {
@@ -2180,24 +2244,71 @@ sub sessionSend {
 # Delete seession
 sub sessionDestroy {
 	my ( $id ) = @_;
-	$id		= sessionCleanID( $id );
-	my $db		= getDb( 'sessions.db' );
+	my %err;
 	
-	$db->do( 'DELETE FROM sessions WHERE session_id = ?;', undef, $id );
+	$id		= sessionCleanID( $id );
+	my $dbh		= getDb( 'sessions.db' );
+	unless( hasErrors( $dbh ) ) {
+		%err = %{$dbh->{error}};
+		append( 
+			\%err, 'sessionDestroy', 
+			report( "Error destroying session ${id} in database" )
+		);
+		
+		return { error => \%err };
+	}
+	
+	my $ok = $dbh->{cxn}->do( 'DELETE FROM sessions WHERE session_id = ?;', undef, $id );
+	unless ( $ok ) {
+		my $estr = $dbh->{cxn}->errstr // 'Unknown error';
+		append( 
+			\%err, 'sessionDestroy', 
+			report( "Error destroying session ${id} in database: ${estr}")
+		);
+		
+		return { error => \%err };
+	};
+		
+	return { id => $id };
 }
 
 # Garbage collection
 sub sessionGC {
-	my $db		= getDb( 'sessions.db' );
+	my %err;
+	my $dbh		= getDb( 'sessions.db' );
+	
+	unless( $dbh ) {
+		%err = %{$dbh->{error}};
+		append( \%err, 'sessionGC', report( "Error connecting to session database" ) );
+		return { error => \%err };
+	}
+	
 	
 	# Delete sessions exceeding garbage collection timeframe
 	my $sth = 
-	$db->prepare( qq(
+	$dbh->{cxn}->prepare( qq(
 		DELETE FROM sessions WHERE (
 		strftime( '%s', 'now' ) - 
 		strftime( '%s', updated ) ) > ? ;
 	) );
-	$sth->execute( SESSION_GC ) and $sth->finish;
+	unless ( $sth ) {
+		my $msg =  $dbh->{cxn}->errstr // 'Unknown error';
+		append( \%err, 'sessionGC', 
+			report( "Failed to prepare session GC statement: ${msg}" ) );
+		
+		return { error => \%err };
+	}
+	
+	my $status = $sth->execute( SESSION_GC );
+	unless ( $status ) {
+		$msg = $sth->errstr // 'Unknown error';
+		append( \%err, 'sessionGC', 
+			report( "Execution failed: ${msg}") );
+		
+		return { error => \%err };
+	}
+	$sth->finish;
+	return {};
 }
 
 # Finish and save session data, if it exists
@@ -2216,16 +2327,42 @@ sub sessionWriteClose {
 		return;
 	}
 	
-	my $db		= getDb( 'sessions.db' );
-	my $sth		= $db->prepare( qq(
+	my %err;
+	my $dbh		= getDb( 'sessions.db' );
+	unless( hasErrors( $dbh ) ) {
+		%err = %{$dbh->{error}};
+		append( 
+			\%err, 'sessionWriteClose', 
+			report( "Error writing to session database" )
+		);
+		
+		return { error => \%err };
+	}
+	
+	my $msg;
+	my $sth		= $dbh->{cxn}->prepare( qq(
 		REPLACE INTO sessions ( session_id, session_data ) 
 			VALUES( ?, ? );
 	) );
+	unless( $sth ) {
+		$msg = $dbh->{cxn}->errstr // 'Unknown error';
+		append( \%err, 'sessionWriteClose', 
+			report( "Failed to prepare session saving statement: ${msg}" ) );
+		return { error => \%err };
+	}
 	
-	$sth->execute( 
+	my $status = $sth->execute( 
 		sessionID(),
 		encode_json( \%data )
-	) and $sth->finish;
+	);
+	unless ( $status ) {
+		$msg = $sth->errstr // 'Unknown error';
+		append( \%err, 'sessionWriteClose', 
+			report( "Session saving failed: ${msg}") );
+		
+		return { error => \%err };
+	}
+	$sth->finish;
 	
 	$written = 1;
 }
