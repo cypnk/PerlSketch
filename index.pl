@@ -373,7 +373,7 @@ sub append {
 	if ( exists( $ref->{$key} ) ) {
 		# Increment indexed hash value
 		$ref->{$key}{ 
-			scalar( keys %$ref->{$key} ) + 1 
+			scalar( keys %{ $ref->{$key} } ) + 1 
 		} = $msg;
 		return;
 	}
@@ -1017,8 +1017,8 @@ sub requestHeaders {
 sub formDataStream {
 	my ( $clen ) = @_;
 	
-	my $chunk;
 	my $bytes		= 0;
+	my $chunk;
 	my %err;
 	
 	my ( $tfh, $tfn )	= 
@@ -1037,6 +1037,7 @@ sub formDataStream {
 	
 	local $| = 1;	# Temporarily disable output buffering
 	
+	# Streaming chunk size
 	my $chunk_size	= 65536;
 	
 	while ( $bytes < $clen ) {
@@ -1200,16 +1201,16 @@ sub formDataSegment {
 			close( $tfh ) or do {
 				append( 
 					\%err, 'formDataSegment', 
-					report( "Error closing temporary file: ${tfn}" ) 
+					report( "Error closing temporary file: ${tname}" ) 
 				);
 				return { error => \%err };
 			};
 			
 			# Special case if file was moved/deleted mid-operation
-			unless ( -e $tfn ) {
+			unless ( -e $tname ) {
 				append( 
 					\%err, 'formDataSegment', 
-					report( "Temporary file was moved, deleted, or quarantined: ${tfn}" ) 
+					report( "Temporary file was moved, deleted, or quarantined: ${tname}" ) 
 				);
 				# Nothing left to close or delete
 				return { error => \%err };
