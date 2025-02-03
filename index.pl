@@ -736,6 +736,12 @@ sub searchFiles {
 	return @items;
 }
 
+# Send output buffer to client and enable auto flush
+sub startFlush() {
+	STDOUT->flush();
+	STDOUT->autoflush( 1 );
+}
+
 # Filter number within min and max range, inclusive
 sub intRange {
 	my ( $val, $min, $max ) = @_;
@@ -1652,6 +1658,7 @@ sub sendFile {
 	binmode( STDOUT );
 	open( my $fh, '<:raw', $rs ) or exit 1;
 	
+	startFlush();
 	if ( $stream ) {
 		my $buf;
 		while ( read( $fh, $buf, BUFFER_SIZE ) ) {
@@ -1718,8 +1725,8 @@ sub streamRanged {
 	my $limit = 0;
 	my $buf;
 	my $chunk;
-	local $| = 1;	# Temporarily disable output buffering
 	
+	startFlush();
 	foreach my $range ( @{$ranges} ) {
 		my ( $start, $end ) = @{$range};
 		
