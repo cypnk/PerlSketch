@@ -1356,17 +1356,26 @@ sub formData {
 sub validateCaptcha {
 	my ( $snonce )	= @_;
 	
-	my %data	= formData();
+	my $data	= formData();
+	unless ( hasErrors( $data ) ) {
+		return 0;
+	}
+	
+	my %fields	= %{$data->{fields}} // {};
+	unless ( keys %fields ) {
+		return 0;
+	}
+	
 	if ( 
-		!defined( $data->{nonce} )	|| 
-		!defined( $data->{cnonce} )	|| 
-		!defined( $data->{captcha} )
+		!defined( $fields{nonce} )	|| 
+		!defined( $fields{cnonce} )	|| 
+		!defined( $fields{captcha} )
 	) {
 		return 0;
 	}
 	
 	my ( $nonce, $cnonce, $captcha ) = ( 
-		$data->{nonce}, $data->{cnonce}, $data->{captcha} 
+		$fields{nonce}, $fields{cnonce}, $fields{captcha} 
 	);
 
 	# Filter everything
@@ -3139,7 +3148,7 @@ sub paginate {
 		} );
 	}
 	
-	if ( $idx < $total )
+	if ( $idx < $total ) {
 		if ( $idx + 1 < $total ) {
 			push( @links, { 
 				text		=> '{page_next}', 
