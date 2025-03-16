@@ -382,17 +382,23 @@ sub append {
 
 # Error and message report formatting helper
 sub report {
-	my ( $msg )	= @_;
-	my ( $pkg, $fname, $line, $func ) = caller( 1 );
+	my ( $msg, $depth )	= @_;
 	
-	$msg	||= 'Empty message';
+	$msg	//= 'Empty message';
 	$msg	= unifySpaces( $msg );
+	$depth	//= 1;
+	
+	my ( $pkg, $fname, $line, $func ) = caller( $depth );
+	return "${msg} ( No caller info at depth ${depth} )" 
+		unless defined $pkg; 
+	
 	$fname	= filterPath( $fname );
 	
 	return 
 	"${msg} ( Package: ${pkg}, File: ${fname}, " . 
 		"Subroutine: ${func}, Line: ${line} )";
 }
+
 
 # Check if hash has an 'error' key set and is not 0
 sub hasErrors {
