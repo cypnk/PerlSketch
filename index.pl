@@ -380,6 +380,38 @@ sub append {
 	$ref->{$key} = { 1 => $msg };
 }
 
+# Helper to find nested caller subroutine details for debugging, logging etc...
+sub callerTrace {
+	my ( $max_depth, $filter )	= @_;
+	
+	my @callers;
+	my $depth		= 0;
+	
+	# Presets
+	$max_depth		= 20 
+		unless defined( $max_depth ) && $max_depth =~ /^\d+$/;
+	
+	$filter			= {} if ref( $filter ) ne 'HASH';
+	$filter->{exclude}	= [] 
+		unless defined( $filter->{exclude} ) && 
+			ref( $filter->{exclude} ) ne 'ARRAY';
+	
+	while ( my $info = caller( $depth ) ) {
+		last if ( $max_depth > 0 && $depth >= $max_depth );
+		next if grep { $_ eq $info[0] } @{$filter->{exclude}};
+		
+		push( @callers, {
+			pkg	=> $info[0] // 'Unknown',
+			fname	=> $info[1] // 'Unknown',
+			line	=> $info[2] // 'Unknown',
+			func	=> $info[3] // 'Unknown',
+		} );
+		$depth++;
+	}
+	
+	return @callers;
+}
+
 # Error and message report formatting helper
 sub report {
 	my ( $msg, $depth )	= @_;
@@ -398,7 +430,6 @@ sub report {
 	"${msg} ( Package: ${pkg}, File: ${fname}, " . 
 		"Subroutine: ${func}, Line: ${line} )";
 }
-
 
 # Check if hash has an 'error' key set and is not 0
 sub hasErrors {
